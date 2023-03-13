@@ -1,0 +1,13 @@
+[package]
+name = "p2p-scope-rust"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+cursive_table_view="0.14"
+clap = { version = "4.1.8", features = ["derive", "unicode"] }
+
+cursive={version = "0.20",default-features = false, features = ["crossterm-backend", "toml", "markdown", "term_size"]}
+
