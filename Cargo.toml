@@ -10,4 +10,5 @@ cursive_table_view="0.14"
 clap = { version = "4.1.8", features = ["derive", "unicode"] }
 
 cursive={version = "0.20",default-features = false, features = ["crossterm-backend", "toml", "markdown", "term_size"]}
+libp2p = { version = "0.51.1", features = ["full"] }
 

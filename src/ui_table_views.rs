@@ -1,6 +1,15 @@
 //Table view data logic structs and traits
 // As well as other interface data elements
 
+// Process status line
+#[derive(Copy, Clone, Hash, Debug)]
+struct InstanceInfo{
+    id: String,
+    host: String,
+    working_directory: String,
+}
+
+// Peer Table START
 #[derive(Copy, Clone, PartialEq, Eq, Hash)]
 enum PeerCol {Id, Role, maddr, live}
 
@@ -44,20 +53,22 @@ Impl TableViewItem<PeerCol> for PeerRow {
             PeerCol::live => if self.live {"*"} else {" "},
         }
     }
+    fn cmp(&self, other: &Self, column: PeerCol)) -> Ordering
+    where
+        Self: Sized,
+    {
+        match column{
+            PeerCol::id => self.id.com(&other.id),
+            PeerCol::maddr => self.maddr.cmp(&other.maddr),
+            PeerCol::role => self.role.cmp(&other.role),
+            PeerCol::live => self.live.cmp(&other.live),
+        }
+    }
 }
+// Peer Table END
 
-
-
-
-#[derive(Copy, Clone, Hash, Debug)]
-struct InstanceInfo{
-    id: String,
-    host: String,
-    working_directory: String,
-}
-
+// Listener maddr table START
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-
 enum ListenerCol{
     maddr, connection_count
 }
@@ -72,9 +83,10 @@ impl ListenerCol {
 
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 struct ListenerRow{
-    maddr:String,
+    maddr: String,
     connection_count: u16,
 }
+
 Impl TableViewItem<ListenerCol> for ListenerRows {
     fn to_column(&self, column: ListenerCol) -> String {
         match column{
@@ -82,6 +94,18 @@ Impl TableViewItem<ListenerCol> for ListenerRows {
             ListenerCol::connection_count => format!("{}",self.connection_count),
         }
     }
+    fn cmp(self &self, other: &Self, column:ListenerCol) -> Ordering
+    where
+        Self: Sized
+    {
+        match column{
+            ListenerCol::maddr => self.maddr.cmp(&other.maddr),
+            ListenerCol::connection_count => self.connection_count.cmp(&other.connection_count),
+        }
+    }
 }
+// Listener maddr table END
+
+#
 
 
