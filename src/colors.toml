@@ -7,11 +7,12 @@ borders = "simple"  # Alternatives are "none" and "outset"
     view       = "black"
 
     primary   = "green"
-    secondary = "#444"
+    secondary = "#894592"
     tertiary  = "#1A5555"
 
-    title_primary   = "#692020"
-    title_secondary = "#000000"
+    title_primary   = "#A9A999"
+    title_secondary = "#009000"
 
-    highlight          = "#453030"
-    highlight_inactive = "#5555FF"
+    highlight          = "#A053A9"
+    highlight_inactive = "#704379"
+

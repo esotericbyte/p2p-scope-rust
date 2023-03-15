@@ -2,10 +2,9 @@ use clap::Parser;
 use libp2p::Multiaddr;
 
 use cursive::Cursive;
-use cursive::views::{ Button, Dialog, DummyView, EditView,
-                     LinearLayout, TextView, SelectView,
-                     ThemedView, Layer };
+use cursive::views::*;
 use cursive::theme;
+use cursive::align::Align;
 use cursive::traits::*;
 use cursive_table_view::{TableView,TableViewItem};
 //use ui_data.rs;
@@ -27,7 +26,7 @@ fn main() {
     println!("{:?}",args);
 
     let mut siv = cursive::default();
-
+    //dark color scheme
     siv.load_toml(
         include_str!(
             "/home/johnh/rustsb/p2p-scope/p2p-scope-rust/src/colors.toml")
@@ -36,7 +35,7 @@ fn main() {
     let select = SelectView::<String>::new()
         .on_submit(on_submit)
         .with_name("select")
-        .fixed_size((10, 5));
+        .fixed_size((30, 12));
 
    // let peers_and_ports= LinearLayout::horizontal().
    //     .child(
@@ -46,21 +45,13 @@ fn main() {
         .child(Button::new("Delete", delete_name))
         .child(DummyView)
         .child(Button::new("Quit", dlg_on_quit));
-
-    let theme = siv.current_theme().clone().with(|theme| {
-        theme.palette[theme::PaletteColor::View] = theme::Color::Dark(theme::BaseColor::Black);
-        theme.palette[theme::PaletteColor::Primary] = theme::Color::Light(theme::BaseColor::Green);
-        theme.palette[theme::PaletteColor::TitlePrimary] =theme::Color::Light(theme::BaseColor::Green);
-        theme.palette[theme::PaletteColor::Highlight] = theme::Color::Dark(theme::BaseColor::Green);
-    });
+   
     
-    
-    siv.add_layer(ThemedView::new(theme,
-        Layer::new(Dialog::around(LinearLayout::horizontal()
+    siv.add_layer(ResizedView::with_full_screen(Panel::new(LinearLayout::horizontal()
             .child(select)
             .child(DummyView)
-            .child(buttons))
-        .title("Select a profile"))));
+            .child(buttons)
+            )));
 
     siv.run();
 }
@@ -76,7 +67,7 @@ fn add_name(s: &mut Cursive) {
     s.add_layer(Dialog::around(EditView::new()
             .on_submit(ok)
             .with_name("name")
-            .fixed_width(10))
+            .fixed_width(35))
         .title("Enter a new name")
         .button("Ok", |s| {
             let name =
