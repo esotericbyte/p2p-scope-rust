@@ -32,20 +32,19 @@ use mpsc::{channel,Sender,Receiver};
 // Lib p2p and related includes
 use futures::StreamExt;
 use libp2p::{
+    swarm::{NetworkBehaviour, SwarmEvent,Swarm,SwarmBuilder },
     core::{upgrade},
     floodsub::{self, Floodsub, FloodsubEvent},
-    identity, mdns, mplex, noise,
-    swarm::{NetworkBehaviour, SwarmEvent },
-    tcp, PeerId, Transport,
+    tcp, PeerId, Transport, Multiaddr, identity, mdns, mplex, noise,
 };
-use libp2p_swarm::derive_prelude::ConnectedPoint::Dialer;
+
+use ConnectedPoint::Dialer;
 use std::error::Error;
 use std::sync::mpsc;
 use tokio::io::{self, AsyncBufReadExt};
 
 // TUI and argument parsing includes
 use clap::Parser;
-use libp2p::Multiaddr;
 
 use cursive::Cursive;
 use cursive::views::*;
@@ -127,26 +126,7 @@ fn new_user_message(s: &mut Cursive, message: &str){
     //add to history
     //clear the user message view
 }
-
-// fn gen_handle_ui_update(tui_update_receiver: mpsc::Receiver<Box<TuiUpdate>>) ->
-//     Box<dyn Fn(& mut cursive)> {
-//     Box::new(
-//     |s: & mut cursive| {
-//         tui_update = tui_update_receiver.try_recieve();
-//         match ui_update {
-//             Some(ChatMessage("monolith", from_id, message)) => {
-//                 s.call_on_name("monolith_chat_view", |view: &mute ListView | {
-//                     view.add_child(
-//                         TextView::new(format!("From {}: {}", from_id, message)));
-//                 })
-//             }
-//             _ => {}
-//         }
-//     })
-// }
-
-
-
+// CURSIVE TUI Functions
 fn dlg_on_quit(s: &mut Cursive){
     s.add_layer(Dialog::around(TextView::new("Confirm quit?"))
         .title("Quit P2P Scope?")
@@ -185,10 +165,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let instance_info_text = format!("Instance Info: {} {}",instance_id_text, args_text);
     let (tui_update_sender,tui_update_receiver) = channel(); // for TuiUpdate 
     let (user_message_sender, user_message_receiver) = channel(); //for String
-    std::thread::spawn(move|| {
-        terminal_user_interface(user_message_sender,
-        tui_update_receiver,
-        instance_info_text);
+    let tui_handle = std::thread::spawn(move|| {
+        terminal_user_interface(
+            user_message_sender,
+            tui_update_receiver,
+            instance_info_text);
     });
 
     // INIT libp2p
@@ -245,7 +226,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
         floodsub: Floodsub::new(peer_id),
         mdns: mdns_behaviour,
     };
-    let mut swarm = libp2p_swarm::Swarm::with_tokio_executor(transport, behaviour, peer_id);
+    let mut swarm = Swarm::with_tokio_executor(transport, behaviour, peer_id);
     swarm.behaviour_mut().floodsub.subscribe(floodsub_topic.clone());
 
     // Reach out to another node if specified
@@ -264,7 +245,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Kick it off
     loop {
         tokio::select! {
-            Some(user_message) = user_message_receiver.try_recv() => {
+            Ok(*line_str) = user_message_receiver.try_recv() => {
                 swarm.behaviour_mut().floodsub.publish_any(
                     floodsub_topic.clone(), line_str.as_bytes());
             }
