@@ -75,19 +75,13 @@ fn terminal_user_interface(
     siv.add_global_callback(
         Refresh,
         |s: & mut Cursive| {
-        let tui_update = tui_update_receiver.try_recieve();
-        match tui_update {
-            Some(chat_message("monolith", from_id, message)) => {
+        let tui_update = tui_update_receiver.try_recv();
+        if let Ok(TuiUpdate::ChatMessage("monolith", from_id, message)) = tui_update  {
                 s.call_on_name("monolith_chat_view", |view: &mut ListView | {
                     view.add_child("",
                         TextView(format!("From {}: {}", from_id, message)));
-                })
-            }
-            _ => {}
-        }
-    });
-    
-    // CURSIVE  TUI view setup
+                }) } } );
+    // CURSIVE  TUI views
     //let peers_view
     //let ports_view
     let user_message_input = EditView::new()
