@@ -52,25 +52,20 @@ use cursive::theme;
 use cursive::traits::*;
 use cursive::views::*;
 use cursive::Cursive;
+use cursive::reexports::toml::to_string;
 
 #[derive(Debug)]
 enum TuiUpdate {
-    ChatMessage {
-        topic: String,
-        from_id: String,
-        message: String,
-    },
-    NewContent {
-        view_name: String,
-        content: String,
-    },
+    // topic , from_id , message
+    ChatMessage(String, String, String),
+    NewContent(String, String),
 }
 
 fn terminal_user_interface(
-    user_message_sender: Sender<Box<String>>,
-    tui_update_receiver: Receiver<Box<TuiUpdate>>,
+    user_message_sender: std::sync::mpsc::Sender<String>,
+    tui_update_receiver: std::sync::mpsc::Receiver<TuiUpdate>,
     instance_info_text: String,
-) -> u8 {
+) {
     // Initialize Cursive TUI
     let mut siv = cursive::default();
     //dark color scheme
@@ -80,12 +75,15 @@ fn terminal_user_interface(
     .unwrap();
     siv.add_global_callback(Refresh, |s: &mut Cursive| {
         let tui_update = tui_update_receiver.try_recv();
-        if let Ok(TuiUpdate::ChatMessage("monolith", from_id, message)) = tui_update {
-            s.call_on_name("monolith_chat_view", |view: &mut ListView| {
-                view.add_child("", TextView(format!("From {}: {}", from_id, message)));
-            })
+        if let Ok(TuiUpdate::ChatMessage(topic, from_id, message)) = tui_update {
+            if topic == "monolith".to_string() {
+                s.call_on_name("monolith_chat_view", |view: &mut ListView| {
+                    view.add_child("", TextView(format!("From {}: {}", from_id, message)));
+                })
+            }
         }
-    });
+    }
+}
     // CURSIVE  TUI views
     //let peers_view
     //let ports_view
