@@ -40,6 +40,8 @@ use libp2p::swarm::ConnectionError::KeepAliveTimeout;
 use libp2p::core::{Endpoint, ConnectedPoint};
 
 use std::error::Error;
+use std::io::Read;
+use std::ptr::addr_of_mut;
 use std::sync::mpsc;
 use std::sync::mpsc::SendError;
 use tokio::io::{AsyncBufReadExt};
@@ -48,11 +50,17 @@ use tokio;
 // TUI and argument parsing includes
 use clap::Parser;
 use cursive;
+use cursive::backends::crossterm::crossterm::style;
+use cursive::theme::*;
+use cursive::traits::*;
+use cursive::utils::*;
 use cursive::Cursive;
+use cursive::direction::Orientation::{Horizontal, Vertical};
 use cursive::reexports::toml::to_string;
 use cursive::event::Event::Refresh;
-use cursive::views::{Dialog, EditView, TextView, ListView, LinearLayout, ResizedView, ScrollView};
-use cursive::view::{Nameable, Scrollable};
+use cursive::theme::Effect::Bold;
+use cursive::views::{Dialog, EditView, TextView, ListView, LinearLayout, ResizedView, ScrollView, Button, Panel};
+use cursive::view::{Nameable, Position, Scrollable};
 
 #[derive(Debug)]
 enum TuiUpdate {
@@ -66,12 +74,11 @@ struct TheCursiveUserData {
     tui_update_receiver: std::sync::mpsc::Receiver<Box<TuiUpdate>>,
 }
 
+//noinspection ALL
 fn terminal_user_interface(
     user_message_sender: tokio::sync::mpsc::Sender<Box<String>>,
     tui_update_receiver: std::sync::mpsc::Receiver<Box<TuiUpdate>>,
-    instance_info_text: String,
-) {
-
+    instance_info_text: String, ) {
     // Initialize Cursive TUI
     let mut siv = cursive::default();
     //dark color scheme
@@ -82,43 +89,64 @@ fn terminal_user_interface(
         user_message_sender,
         tui_update_receiver,
     });
-    let e_to_do = cursive::event::Event::Ctrl();
+    siv.add_global_callback(cursive::event::Event::CtrlChar('l'), move |s: &mut Cursive| {
+        s.toggle_debug_console();
+    });
+
     siv.add_global_callback(Refresh, move |s: &mut Cursive| {
         let ud: &TheCursiveUserData = s.user_data().unwrap();
         if let Ok(tui_update_boxed) = ud.tui_update_receiver.try_recv() {
             let tui_update = *tui_update_boxed;
             if let TuiUpdate::AppendMessage(topic, from_id, message) = tui_update {
                 if topic == "monolith".to_string() {
-                    s.call_on_name("monolith_chat_view", |view: &mut ListView| {
-                        view.add_child("", TextView::new(format!("From {}: {}", from_id, message)));
+                    s.call_on_name("monolith_chat_view", |view: &mut TextView| {
+                        view.append(format!("From {}: {}\r", from_id, message));
                     });
                 }
                 if topic == "output".to_string() {
-                    s.call_on_name("output_view", |view: &mut ListView| {
-                        view.add_child("", TextView::new(message.to_string()));
+                    s.call_on_name("output_view", |view: &mut TextView| {
+                        view.append(format!("{}\r",message.to_string()));
                     });
                 }
             }
         }
-        cursive::event::EventResultEventResult::Ignore;
+        // can't return this cursive::event::EventResult::Ignored
     });
 
     // CURSIVE  TUI views
     //let peers_view
     //let ports_view
-    let user_message_input = EditView::new()
-        .on_submit(new_user_message)
-        .with_name("user_message_input");
+    let user_message_input = LinearLayout::new(Horizontal)
+        .child(EditView::new()
+            .on_submit(new_user_message)
+            .with_name("user_message_input")
+            .min_width(40)
+        )
+        .child(Button::new("Send", |s: &mut Cursive| {
+            s.call_on_name("user_message_input", |v: &mut EditView| {
+                v.set_content("foo var")
+            });
+        }));
+
     // let user_message_history = ListView::new()
     //    .with_name("user_message_history")
     //    .on_select(selected_message);
-    let monolith_chat_view = ListView::new()
-        .scrollable()
-        .with_name("monolith_chat_view");
-    let output_view = ListView::new()
-        .scrollable()
-        .with_name("output_view");
-    let instance_info_view = TextView::new(instance_info_text);
+
+    let monolith_chat_view = TextView::new("MONOLITH CHAT")
+        .with_name("monolith_chat_view")
+        .min_width(20)
+        .max_height(16)
+        .scrollable();
+    let output_view = TextView::new("OUTPUT VIEW")
+        .with_name("output_view")
+        .min_width(20)
+        .min_height(10)
+        .max_height(16)
+        .scrollable();
+
+    let instance_info_view = TextView::new(instance_info_text)
+        .with_name("instance_info").full_width().min_height(2);
+
     // let peers_and_ports_layout = LinearLayout::horizontal.new()
     //    .child(peers_view)
     //    .child(ResizedView.with_percent_width(20).child(ports_view))
@@ -128,30 +156,26 @@ fn terminal_user_interface(
             //.child(peers_and_ports)
             .child(user_message_input)
             //.child(user_message_history)
-            .child(monolith_chat_view)
-            .child(output_view)
+            .child(LinearLayout::new(Horizontal)
+                .child(monolith_chat_view)
+                .child(output_view))
     );
     siv.add_layer(scope_screen);
     siv.run();
 }
 
 fn new_user_message(s: &mut Cursive, message: &str) {
-    if message.is_empty() {
-        return;
-    };
-    let msg = message.clone();
-    s.call_on_name("monolith_chat_view", |view: &mut ListView| {
-        view.add_child("", TextView::new(message))
+    s.call_on_name("monolith_chat_view", |v: &mut TextView| {
+        v.append(format!("{}\r",message))
     });
-    //clear the user message view
-
-    s.call_on_name("user_message_input", |view: &mut ListView| {
-        view.clear();
+    s.call_on_name("user_message_input", |v: &mut EditView| {
+        v.set_content("")
     });
     let ud: &TheCursiveUserData = s.user_data().unwrap();
-    ud.user_message_sender.blocking_send(Box::new(message.to_string()));
-    //add to history
+    ud.user_message_sender.blocking_send(Box::new(message.to_string())).unwrap();
+    //TODO: add messages to history
 }
+
 
 // CURSIVE TUI Functions
 fn dlg_on_quit(s: &mut Cursive) {
@@ -188,8 +212,9 @@ enum ListenMode {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    env_logger::init();
+    // env_logger::init();
     //parse command line arguments
+
     let clap_args = Arguments::parse();
     let args_text = format!("cli args: {:?}", clap_args);
 
@@ -203,6 +228,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let instance_info_text = format!(" {} CliArgs: {}", peer_id_text, args_text);
     let (tui_update_sender, tui_update_receiver) = std::sync::mpsc::channel();
     let (user_message_sender, mut user_message_receiver) = tokio::sync::mpsc::channel::<Box<String>>(32);
+    cursive::logger::init();
     let tui_handle = std::thread::spawn(move || {
         terminal_user_interface(user_message_sender, tui_update_receiver, instance_info_text);
     });
@@ -273,7 +299,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     if let Some(addr_list) = clap_args.dial {
         for addr in addr_list {
             swarm.dial(addr.clone())?;
-            tui_out(format!("Dialed {:?}",addr));
+            tui_out(format!("Dialed {:?}", addr));
         }
     }
     // Replaced by Tui
@@ -299,6 +325,12 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
+    let listeners = swarm.listeners();
+        tui_out("LISTENERS:\r".to_string());
+    for ma in listeners {
+        tui_out(format!("{:?}\r", ma));
+    }
+
     if let Some(Maddr) = clap_args.listen_on {
         if !no_listen {
             swarm.listen_on(Maddr)?;
