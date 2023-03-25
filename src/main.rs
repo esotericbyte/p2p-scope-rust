@@ -111,7 +111,7 @@ fn terminal_user_interface(
 // &Sender<Box<dyn FnOnce(&mut Cursive) + Send + 'static, Global>>
 {
     // Initialize Cursive TUI
-    let mut siv = Cursive::new();
+    let mut siv = cursive::default();
     let cursive_call_back_sink: Box<&CbSink> = Box::new(siv.cb_sink());
     cb_sync_sender.send(cursive_call_back_sink).unwrap();
     //dark color scheme
@@ -165,11 +165,13 @@ fn terminal_user_interface(
         .max_height(16)
         .scrollable();
 
-    let instance_info_view =
-        TextView::new(format!("peer id: {} cli args:{}",libp2p_network_id, command_line_opts))
-        .with_name("instance_info")
-        .full_width()
-        .min_height(2);
+    let instance_info_view = TextView::new(format!(
+        "peer id: {} cli args:{}",
+        libp2p_network_id, command_line_opts
+    ))
+    .with_name("instance_info")
+    .full_width()
+    .min_height(2);
 
     // let peers_and_ports_layout = LinearLayout::horizontal.new()
     //    .child(peers_view)
@@ -224,7 +226,11 @@ fn append_to_tui_view(view_name: &str, from_id: String, message: Vec<u8>) {
             cb_sink
                 .send(Box::new(|s| {
                     s.call_on_name("monolith_chat_view", |view: &mut TextView| {
-                        view.append(format!("From {}: {}\r", from_id, String::from_utf8_lossy(&message)));
+                        view.append(format!(
+                            "From {}: {}\r",
+                            from_id,
+                            String::from_utf8_lossy(&message)
+                        ));
                     })
                 }))
                 .unwrap();
@@ -273,7 +279,7 @@ enum ListenMode {
     NoListen,
 }
 
-fn terminal_output(output: S)
+fn terminal_output<S>(output: S)
 where
     S: Into<String>,
 {
@@ -303,8 +309,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let tui_handle = std::thread::spawn(move || {
         terminal_user_interface(user_message_sender, cb_sink_sender, peer_id_text, args_text);
     });
-
-    let tus = tui_update_sender.clone();
 
     // More libp2p setup for NETWORK
 
