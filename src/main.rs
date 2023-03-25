@@ -29,38 +29,42 @@
 //! ```
 
 // Lib p2p and related includes
-use libp2p::{
-    tcp, Multiaddr, PeerId, Transport, identity, mdns, mplex, noise,
-    core::{upgrade},
-    floodsub::{self, Floodsub, FloodsubEvent},
-    futures::{StreamExt},
-    swarm::{NetworkBehaviour, Swarm, SwarmEvent},
-};
+use libp2p::core::{ConnectedPoint, Endpoint};
 use libp2p::swarm::ConnectionError::KeepAliveTimeout;
-use libp2p::core::{Endpoint, ConnectedPoint};
+use libp2p::{
+    core::upgrade,
+    floodsub::{self, Floodsub, FloodsubEvent},
+    futures::StreamExt,
+    identity, mdns, mplex, noise,
+    swarm::{NetworkBehaviour, Swarm, SwarmEvent},
+    tcp, Multiaddr, PeerId, Transport,
+};
 
 use std::error::Error;
 use std::io::Read;
 use std::ptr::addr_of_mut;
 use std::sync::mpsc;
-use std::sync::mpsc::SendError;
-use tokio::io::{AsyncBufReadExt};
+use std::sync::mpsc::{SendError, Sender};
 use tokio;
+use tokio::io::AsyncBufReadExt;
 
 // TUI and argument parsing includes
 use clap::Parser;
 use cursive;
 use cursive::backends::crossterm::crossterm::style;
+use cursive::direction::Orientation::{Horizontal, Vertical};
+use cursive::event::Event::Refresh;
+use cursive::reexports::toml::to_string;
+use cursive::theme::Effect::Bold;
 use cursive::theme::*;
 use cursive::traits::*;
 use cursive::utils::*;
-use cursive::Cursive;
-use cursive::direction::Orientation::{Horizontal, Vertical};
-use cursive::reexports::toml::to_string;
-use cursive::event::Event::Refresh;
-use cursive::theme::Effect::Bold;
-use cursive::views::{Dialog, EditView, TextView, ListView, LinearLayout, ResizedView, ScrollView, Button, Panel};
 use cursive::view::{Nameable, Position, Scrollable};
+use cursive::views::{
+    Button, Dialog, EditView, LinearLayout, ListView, Panel, ResizedView, ScrollView, TextView,
+};
+use cursive::{CbSink, Cursive};
+use tokio::sync::oneshot;
 
 #[derive(Debug)]
 enum TuiUpdate {
@@ -69,58 +73,75 @@ enum TuiUpdate {
     NewContent(String, String),
 }
 
-struct TheCursiveUserData {
+// cursive allows to store a user data in it's runtime so this struct is for that purpose
+struct TheUserData {
     user_message_sender: tokio::sync::mpsc::Sender<Box<String>>,
-    tui_update_receiver: std::sync::mpsc::Receiver<Box<TuiUpdate>>,
+    libp2p_network_id: String,
+    command_line_opts: String,
 }
+//tui_update_receiver: std::sync::mpsc::Receiver<Box<TuiUpdate>>,
 
-//noinspection ALL
+// Cursive  UI has 2 phases
+// In the first phase the UI is declared
+// In the second phase it is run on an event loop in a standard syncronous thread.
+//
+// The primary way it to communicate into the thread during the run phase is a
+// callback sync which i think is an mpsc channel under the hood.
+// Callbacks in the form of closures are the primary way to send changes to the runtime.
+// There is a 'user data' instance within the thread and I've used this to send data out of the
+// Thread to the tokio runtime.
+//
+// Tokio runtime is completely different from cursive. They are 2 separate event loops and will be
+// run in separate threads.
+//
+// Current plan is for Cursive to run in a standard thread and for tokio in the main thread running
+// the tokio runtime defined by the tokio main macro.
+//
+// This next function will be run in a separate thread.
+// To change the ui, the callback sync provided by Cursive is sent by a oneshot channel.
+//
+//
 fn terminal_user_interface(
     user_message_sender: tokio::sync::mpsc::Sender<Box<String>>,
-    tui_update_receiver: std::sync::mpsc::Receiver<Box<TuiUpdate>>,
-    instance_info_text: String, ) {
+    cb_sync_sender: oneshot::Sender<Box<&CbSink>>,
+    libp2p_network_id: String,
+    command_line_opts: String,
+)
+// async send back: cb_sync
+// &Sender<Box<dyn FnOnce(&mut Cursive) + Send + 'static, Global>>
+{
     // Initialize Cursive TUI
-    let mut siv = cursive::default();
+    let mut siv = Cursive::new();
+    let cursive_call_back_sink: Box<&CbSink> = Box::new(siv.cb_sink());
+    cb_sync_sender.send(cursive_call_back_sink).unwrap();
     //dark color scheme
-    siv.load_toml(include_str!(
-        "/home/johnh/rustsb/p2p-scope/p2p-scope-rust/src/colors.toml"
-    )).unwrap();
-    siv.set_user_data(TheCursiveUserData {
-        user_message_sender,
-        tui_update_receiver,
-    });
-    siv.add_global_callback(cursive::event::Event::CtrlChar('l'), move |s: &mut Cursive| {
-        s.toggle_debug_console();
-    });
+    siv.load_toml(include_str!("colors.toml")).unwrap();
 
-    siv.add_global_callback(Refresh, move |s: &mut Cursive| {
-        let ud: &TheCursiveUserData = s.user_data().unwrap();
-        if let Ok(tui_update_boxed) = ud.tui_update_receiver.try_recv() {
-            let tui_update = *tui_update_boxed;
-            if let TuiUpdate::AppendMessage(topic, from_id, message) = tui_update {
-                if topic == "monolith".to_string() {
-                    s.call_on_name("monolith_chat_view", |view: &mut TextView| {
-                        view.append(format!("From {}: {}\r", from_id, message));
-                    });
-                }
-                if topic == "output".to_string() {
-                    s.call_on_name("output_view", |view: &mut TextView| {
-                        view.append(format!("{}\r",message.to_string()));
-                    });
-                }
-            }
-        }
-        // can't return this cursive::event::EventResult::Ignored
-    });
+    let user_data = TheUserData {
+        user_message_sender,
+        libp2p_network_id,
+        command_line_opts,
+    };
+
+    siv.set_user_data(user_data); //value as &dyn Any
+    siv.add_global_callback(
+        cursive::event::Event::CtrlChar('d'),
+        move |s: &mut Cursive| {
+            s.toggle_debug_console();
+        },
+    );
+    //    siv.add_global_callback(Refresh, move |s: &mut Cursive| {
+    // other direction        channel_result = s.user_data()::<TheUserData>.user_message_sender
 
     // CURSIVE  TUI views
     //let peers_view
     //let ports_view
     let user_message_input = LinearLayout::new(Horizontal)
-        .child(EditView::new()
-            .on_submit(new_user_message)
-            .with_name("user_message_input")
-            .min_width(40)
+        .child(
+            EditView::new()
+                .on_submit(new_user_message)
+                .with_name("user_message_input")
+                .min_width(40),
         )
         .child(Button::new("Send", |s: &mut Cursive| {
             s.call_on_name("user_message_input", |v: &mut EditView| {
@@ -132,20 +153,23 @@ fn terminal_user_interface(
     //    .with_name("user_message_history")
     //    .on_select(selected_message);
 
-    let monolith_chat_view = TextView::new("MONOLITH CHAT")
+    let monolith_chat_view = TextView::new("MONOLITH CHAT\r")
         .with_name("monolith_chat_view")
         .min_width(20)
         .max_height(16)
         .scrollable();
-    let output_view = TextView::new("OUTPUT VIEW")
+    let output_view = TextView::new("OUTPUT VIEW\r")
         .with_name("output_view")
         .min_width(20)
         .min_height(10)
         .max_height(16)
         .scrollable();
 
-    let instance_info_view = TextView::new(instance_info_text)
-        .with_name("instance_info").full_width().min_height(2);
+    let instance_info_view =
+        TextView::new(format!("peer id: {} cli args:{}",libp2p_network_id, command_line_opts))
+        .with_name("instance_info")
+        .full_width()
+        .min_height(2);
 
     // let peers_and_ports_layout = LinearLayout::horizontal.new()
     //    .child(peers_view)
@@ -156,26 +180,27 @@ fn terminal_user_interface(
             //.child(peers_and_ports)
             .child(user_message_input)
             //.child(user_message_history)
-            .child(LinearLayout::new(Horizontal)
-                .child(monolith_chat_view)
-                .child(output_view))
+            .child(
+                LinearLayout::new(Horizontal)
+                    .child(monolith_chat_view)
+                    .child(output_view),
+            ),
     );
     siv.add_layer(scope_screen);
     siv.run();
 }
-
+// inital callbacks
 fn new_user_message(s: &mut Cursive, message: &str) {
     s.call_on_name("monolith_chat_view", |v: &mut TextView| {
-        v.append(format!("{}\r",message))
+        v.append(format!("{}\r", message))
     });
-    s.call_on_name("user_message_input", |v: &mut EditView| {
-        v.set_content("")
-    });
-    let ud: &TheCursiveUserData = s.user_data().unwrap();
-    ud.user_message_sender.blocking_send(Box::new(message.to_string())).unwrap();
+    s.call_on_name("user_message_input", |v: &mut EditView| v.set_content(""));
+    let ud: &TheUserData = s.user_data().unwrap();
+    ud.user_message_sender
+        .blocking_send(Box::new(message.to_string()))
+        .unwrap();
     //TODO: add messages to history
 }
-
 
 // CURSIVE TUI Functions
 fn dlg_on_quit(s: &mut Cursive) {
@@ -189,6 +214,44 @@ fn dlg_on_quit(s: &mut Cursive) {
                 s.quit();
             }),
     );
+}
+
+// cb_sink send callbacks
+
+fn append_to_tui_view(view_name: &str, from_id: String, message: Vec<u8>) {
+    match view_name {
+        "monolith_chat_view" => {
+            cb_sink
+                .send(Box::new(|s| {
+                    s.call_on_name("monolith_chat_view", |view: &mut TextView| {
+                        view.append(format!("From {}: {}\r", from_id, String::from_utf8_lossy(&message)));
+                    })
+                }))
+                .unwrap();
+        }
+        "output_view" => {
+            cb_sink
+                .send(Box::new(|s| {
+                    s.call_on_name("output_view", |view: &mut TextView| {
+                        view.append(format!("{}\r", String::from_utf8_lossy(&message)));
+                    })
+                }))
+                .unwrap();
+        }
+        _ => {
+            cb_sink
+                .send(Box::new(|s| {
+                    s.call_on_name("output_view", |view: &mut TextView| {
+                        view.append(format!(
+                            "Unknown view\"{}\" message: \"{}\"\r",
+                            view_name,
+                            String::from_utf8_lossy(&message)
+                        ));
+                    })
+                }))
+                .unwrap();
+        }
+    }
 }
 
 // Argument parsing initialization
@@ -207,7 +270,14 @@ enum ListenMode {
     All,
     Localhost,
     Lan,
-    No_listen,
+    NoListen,
+}
+
+fn terminal_output(output: S)
+where
+    S: Into<String>,
+{
+    append_to_tui_view("output_view", String::from(""), output.Into());
 }
 
 #[tokio::main]
@@ -226,20 +296,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Terminal interface start
     let instance_info_text = format!(" {} CliArgs: {}", peer_id_text, args_text);
-    let (tui_update_sender, tui_update_receiver) = std::sync::mpsc::channel();
-    let (user_message_sender, mut user_message_receiver) = tokio::sync::mpsc::channel::<Box<String>>(32);
+    let (user_message_sender, mut user_message_receiver) =
+        tokio::sync::mpsc::channel::<Box<String>>(32);
     cursive::logger::init();
+    let (cb_sink_sender, cb_sink_receiver) = oneshot::channel();
     let tui_handle = std::thread::spawn(move || {
-        terminal_user_interface(user_message_sender, tui_update_receiver, instance_info_text);
+        terminal_user_interface(user_message_sender, cb_sink_sender, peer_id_text, args_text);
     });
-    fn tui_out_mk(tus: std::sync::mpsc::Sender<Box<TuiUpdate>>) -> Box<dyn Fn(String) -> Result<(), SendError<Box<TuiUpdate>>>> {
-        Box::new(move |output: String| {
-            tus.send(Box::new(TuiUpdate::AppendMessage(
-                "output_view".to_string(), "".to_string(), output.to_string())))
-        })
-    }
+
     let tus = tui_update_sender.clone();
-    let tui_out = tui_out_mk(tus);
+
+    // More libp2p setup for NETWORK
 
     // Create a tokio-based TCP transport use noise for authenticated
     // encryption and Mplex for multiplexing of substreams on a TCP stream.
@@ -294,48 +361,59 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .behaviour_mut()
         .floodsub
         .subscribe(floodsub_topic.clone());
+    // NOW get the cb_sink And BLOCK so that terminal output is available
+    let Ok(cb_sink) = cb_sink_receiver.blocking_recv();
 
     // Reach out to another node if specified
-    if let Some(addr_list) = clap_args.dial {
-        for addr in addr_list {
-            swarm.dial(addr.clone())?;
-            tui_out(format!("Dialed {:?}", addr));
+    match clap_args.dial {
+        Some(addr_list) => {
+            for addr in addr_list {
+                swarm.dial(addr.clone());
+                terminal_output(format!("Dialed {:?}", addr));
+            }
+        }
+        None => {
+            terminal_output(format!("No addresses Dialed"));
         }
     }
     // Replaced by Tui
     // Read full lines from stdin
     // let mut stdin = io::BufReader::new(io::stdin()).lines();
 
-    // todo: mechanism to send stdout to Tui view
     let all_ports = "/ip4/0.0.0.0/tcp/0".parse()?;
     let local_port = "/ip4/127.0.0.0/tcp/0".parse()?;
     let mut no_listen = false;
     if let Some(ListenMode) = clap_args.listen_mode {
         match ListenMode {
             // Listen on all interfaces and whatever port the OS assigns
-            ListenMode::All => { swarm.listen_on(all_ports)?; }
-            ListenMode::No_listen => {
-                tui_out(format!("Not listening! La La la La La!"));
+            ListenMode::All => {
+                swarm.listen_on(all_ports)?;
+            }
+            ListenMode::NoListen => {
+                terminal_output(format!("Not listening! La La la La La!"));
                 no_listen = true;
             }
-            ListenMode::Localhost => { swarm.listen_on(local_port)?; }
+            ListenMode::Localhost => {
+                swarm.listen_on(local_port)?;
+            }
             ListenMode::Lan => {
                 swarm.listen_on(all_ports)?;
-                tui_out(format!("LAN limitation unimplemented"));
+                terminal_output(format!("LAN limitation unimplemented"));
             }
         }
     }
     let listeners = swarm.listeners();
-        tui_out("LISTENERS:\r".to_string());
+    terminal_output("LISTENERS:\r".to_string());
     for ma in listeners {
-        tui_out(format!("{:?}\r", ma));
+        terminal_output(format!("{:?}\r", ma));
     }
 
-    if let Some(Maddr) = clap_args.listen_on {
+    if let Some(maddr) = clap_args.listen_on {
         if !no_listen {
-            swarm.listen_on(Maddr)?;
+            swarm.listen_on(maddr)?;
         }
     }
+
     // Kick it off
     loop {
         tokio::select! {
@@ -347,7 +425,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
-                        tui_out( format!("Listening on {address:?}"));
+                        terminal_output(     format!("Listening on {address:?}"));
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::Floodsub(
                         FloodsubEvent::Message(message))) => {
@@ -376,7 +454,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         }
                     }
                     SwarmEvent::ConnectionEstablished{peer_id,..} => {
-                        tui_out( format!("Connected!: '{:?}'",event));
+                        terminal_output(     format!("Connected!: '{:?}'",event));
                         swarm.behaviour_mut().floodsub.add_node_to_partial_view(peer_id);
                     }
                     SwarmEvent::ConnectionClosed {peer_id, endpoint: ConnectedPoint::Dialer { address,.. },
@@ -384,15 +462,15 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
                         // Hanging up so rude! Redial !
                         // maybe a goodbye message. I believe this will only retry once.
-                        tui_out( format!("KeepAliveTimeout, Redialing {:?}",address));
+                        terminal_output(     format!("KeepAliveTimeout, Redialing {:?}",address));
                         swarm.dial(address)?;
                     }
                     SwarmEvent::ConnectionClosed {peer_id,..} =>{
                         swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
-                        tui_out( format!("DRAT!:{:?}", event));
+                        terminal_output(     format!("DRAT!:{:?}", event));
                     }
                     other_swarm_event => {
-                        tui_out( format!("EVENT: '{:?}'",other_swarm_event));
+                        terminal_output(     format!("EVENT: '{:?}'",other_swarm_event));
                     }
                 }
             }
