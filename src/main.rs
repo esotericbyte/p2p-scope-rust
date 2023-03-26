@@ -29,7 +29,7 @@
 //! ```
 
 // Lib p2p and related includes
-use libp2p::core::{ConnectedPoint, Endpoint};
+use libp2p::core::{ConnectedPoint};
 use libp2p::swarm::ConnectionError::KeepAliveTimeout;
 use libp2p::{
     core::upgrade,
@@ -41,30 +41,24 @@ use libp2p::{
 };
 
 use std::error::Error;
-use std::io::Read;
-use std::ptr::addr_of_mut;
-use std::sync::mpsc;
-use std::sync::mpsc::{SendError, Sender};
 use tokio;
 use tokio::io::AsyncBufReadExt;
+use tokio::sync::oneshot;
 
-// TUI and argument parsing includes
+// easy command line options
 use clap::Parser;
+
+// Cursive TUI api
 use cursive;
-use cursive::backends::crossterm::crossterm::style;
+use cursive::{CbSink, Cursive};
 use cursive::direction::Orientation::{Horizontal, Vertical};
-use cursive::event::Event::Refresh;
-use cursive::reexports::toml::to_string;
-use cursive::theme::Effect::Bold;
 use cursive::theme::*;
 use cursive::traits::*;
-use cursive::utils::*;
 use cursive::view::{Nameable, Position, Scrollable};
 use cursive::views::{
-    Button, Dialog, EditView, LinearLayout, ListView, Panel, ResizedView, ScrollView, TextView,
+    Button, Dialog, EditView, LinearLayout, Panel, ResizedView, ScrollView, TextView,
 };
-use cursive::{CbSink, Cursive};
-use tokio::sync::oneshot;
+
 
 #[derive(Debug)]
 enum TuiUpdate {
@@ -101,7 +95,7 @@ struct TheUserData {
 // To change the ui, the callback sync provided by Cursive is sent by a oneshot channel.
 //
 //
-fn terminal_user_interface(
+pub fn terminal_user_interface(
     user_message_sender: tokio::sync::mpsc::Sender<Box<String>>,
     cb_sync_sender: oneshot::Sender<Box<&CbSink>>,
     libp2p_network_id: String,
@@ -111,20 +105,22 @@ fn terminal_user_interface(
 // &Sender<Box<dyn FnOnce(&mut Cursive) + Send + 'static, Global>>
 {
     // Initialize Cursive TUI
-    let mut siv = cursive::default();
-    let cursive_call_back_sink: Box<&CbSink> = Box::new(siv.cb_sink());
-    cb_sync_sender.send(cursive_call_back_sink).unwrap();
+    let mut cursive_tui:cursive::CursiveRunnable = cursive::CursiveRunnable::crossterm();
+    let cursive_call_back_sink =  cursive_tui.cb_sink();
+    cb_sync_sender.send(Box::new(cursive_call_back_sink)).unwrap();
+    //light color scheme todo: make light scheme and add an option.
+
     //dark color scheme
-    siv.load_toml(include_str!("colors.toml")).unwrap();
+    cursive_tui.load_toml(include_str!("colors.toml")).unwrap();
 
     let user_data = TheUserData {
         user_message_sender,
-        libp2p_network_id,
-        command_line_opts,
+        libp2p_network_id: libp2p_network_id.clone(),
+        command_line_opts: command_line_opts.clone(),
     };
 
-    siv.set_user_data(user_data); //value as &dyn Any
-    siv.add_global_callback(
+    cursive_tui.set_user_data(user_data); //value as &dyn Any
+    cursive_tui.add_global_callback(
         cursive::event::Event::CtrlChar('d'),
         move |s: &mut Cursive| {
             s.toggle_debug_console();
@@ -155,20 +151,18 @@ fn terminal_user_interface(
 
     let monolith_chat_view = TextView::new("MONOLITH CHAT\r")
         .with_name("monolith_chat_view")
-        .min_width(20)
-        .max_height(16)
+        .min_width(35)
+        .min_height(7)
         .scrollable();
     let output_view = TextView::new("OUTPUT VIEW\r")
         .with_name("output_view")
-        .min_width(20)
-        .min_height(10)
-        .max_height(16)
+        .min_width(35)
+        .min_height(3)
+        .max_height(10)
         .scrollable();
 
-    let instance_info_view = TextView::new(format!(
-        "peer id: {} cli args:{}",
-        libp2p_network_id, command_line_opts
-    ))
+    let instance_info_view = TextView::new(
+        format!("Peer ID: {} Command Arguments: {}", libp2p_network_id, command_line_opts))
     .with_name("instance_info")
     .full_width()
     .min_height(2);
@@ -176,6 +170,8 @@ fn terminal_user_interface(
     // let peers_and_ports_layout = LinearLayout::horizontal.new()
     //    .child(peers_view)
     //    .child(ResizedView.with_percent_width(20).child(ports_view))
+    // todo: add a menu? or commands? or both? Commands are better because then it's scriptable
+    // todo: create a better layout. make a reactive and proportional option
     let scope_screen = ResizedView::with_full_screen(
         LinearLayout::vertical()
             .child(instance_info_view)
@@ -188,10 +184,10 @@ fn terminal_user_interface(
                     .child(output_view),
             ),
     );
-    siv.add_layer(scope_screen);
-    siv.run();
+    cursive_tui.add_layer(scope_screen);
+    cursive_tui.run();
 }
-// inital callbacks
+// inital callbacks for declaritive phase
 fn new_user_message(s: &mut Cursive, message: &str) {
     s.call_on_name("monolith_chat_view", |v: &mut TextView| {
         v.append(format!("{}\r", message))
@@ -220,42 +216,32 @@ fn dlg_on_quit(s: &mut Cursive) {
 
 // cb_sink send callbacks
 
-fn append_to_tui_view(view_name: &str, from_id: String, message: Vec<u8>) {
+fn append_to_tui_view(cb_sink: Box<&CbSink>,view_name: &str, from_id_c: String, message_c: String) {
+     let from_id = from_id_c.clone();
+     let message = message_c.clone();
     match view_name {
         "monolith_chat_view" => {
-            cb_sink
-                .send(Box::new(|s| {
-                    s.call_on_name("monolith_chat_view", |view: &mut TextView| {
-                        view.append(format!(
-                            "From {}: {}\r",
-                            from_id,
-                            String::from_utf8_lossy(&message)
-                        ));
-                    })
-                }))
-                .unwrap();
+            cb_sink.send(Box::new( move |s| {
+                s.call_on_name("monolith_chat_view", |view: &mut TextView| {
+                    view.append(format!("From {}: {}\r", from_id, message));
+                }); })).unwrap();
         }
         "output_view" => {
-            cb_sink
-                .send(Box::new(|s| {
+            cb_sink.send (Box::new(move |s| {
                     s.call_on_name("output_view", |view: &mut TextView| {
-                        view.append(format!("{}\r", String::from_utf8_lossy(&message)));
-                    })
-                }))
-                .unwrap();
+                        view.append(format!("{}\r", message));
+                    });
+                })).unwrap();
         }
         _ => {
-            cb_sink
-                .send(Box::new(|s| {
+            let out_message =
+                format!("Unknown view\"{}\" message: \"{}\"\r", String::from(view_name), message);
+
+            cb_sink.send(Box::new( move |s| {
                     s.call_on_name("output_view", |view: &mut TextView| {
-                        view.append(format!(
-                            "Unknown view\"{}\" message: \"{}\"\r",
-                            view_name,
-                            String::from_utf8_lossy(&message)
-                        ));
-                    })
-                }))
-                .unwrap();
+                        view.append(out_message);
+                    });
+                })).unwrap();
         }
     }
 }
@@ -279,12 +265,6 @@ enum ListenMode {
     NoListen,
 }
 
-fn terminal_output<S>(output: S)
-where
-    S: Into<String>,
-{
-    append_to_tui_view("output_view", String::from(""), output.Into());
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -366,13 +346,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .floodsub
         .subscribe(floodsub_topic.clone());
     // NOW get the cb_sink And BLOCK so that terminal output is available
-    let Ok(cb_sink) = cb_sink_receiver.blocking_recv();
+    let cb_sink = cb_sink_receiver.blocking_recv().unwrap();
+    // this feels like precarious plumbing  - let go and let rust
+    let terminal_output = | output| {
+        append_to_tui_view(cb_sink.clone(),"output_view",
+                           String::from(""), output);
+    };
+    let send_user_message = |from_id: String, user_message : String| {
+        append_to_tui_view(cb_sink.clone(),"monolith_chat_view",
+                           from_id, user_message);
+    };
 
     // Reach out to another node if specified
     match clap_args.dial {
         Some(addr_list) => {
             for addr in addr_list {
-                swarm.dial(addr.clone());
+                swarm.dial(addr.clone()).unwrap();
                 terminal_output(format!("Dialed {:?}", addr));
             }
         }
@@ -433,13 +422,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::Floodsub(
                         FloodsubEvent::Message(message))) => {
-                        //unbounded std mpsc is not blocking
-                        let message_string = format!("{}",String::from_utf8_lossy(&message.data));
-                        tui_update_sender.send( Box::new(
-                            TuiUpdate::AppendMessage(
-                                "monolith".to_string(),
-                                message.source.to_string() ,
-                                message_string)));
+                        let message_string = String::from_utf8(message.data).unwrap();
+                        let message_id_string = message.source.to_string();
+                        send_user_message( message_id_string, message_string);
                     }
                     SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(event)) => {
                         match event {
