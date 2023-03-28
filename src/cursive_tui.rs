@@ -1,9 +1,8 @@
 
 // Cursive TUI api
 use cursive;
-use cursive::{backend, backends, CbSink, crossterm, Cursive};
+use cursive::{Callback, CbSink, crossterm, Cursive, CursiveRunnable};
 use cursive::direction::Orientation::{Horizontal, Vertical};
-use cursive::theme::*;
 use cursive::traits::*;
 use cursive::view::{Nameable, Position, Scrollable};
 use cursive::views::{
@@ -12,52 +11,11 @@ use cursive::views::{
 
 use std::sync::mpsc;
 // fully specify tokio::sync::mpsc
-
 use std::sync::Mutex;
 use std::sync::Arc;
-use cursive::backends::puppet::Backend;
-use crate::{CursiveChannelRunner, Multiaddr};
-use crate::PeerId;
-use crate::Arguments;
-use crate::cursive_channel_runner::CursiveChannelRunner;
+use cursive::event::Callback;
+use crate::{Multiaddr, PeerId, CliArguments, Theme};
 
-#[derive(Debug)]
-pub(crate) enum TuiUpdate {
-    // Todo: Add Times
-    // topic , from_id , message
-    TextMessage(ViewSpec, tup::PeerID(), tup::MessageText()),
-    InputMessage(tup::Topic, tup::MessageText()),
-    ProtobufMessage(tup::Topic, tup::PeerID(),tup::SpecProtobuf(), tup::MessageProtobuf()),
-    // arbitrary program output to output_view
-    TerminalOutput(tup::MessageText()),
-    AppendView(ViewSpec, String),
-    NewContent(ViewSpec, String),
-    // NewEvent(time,source,environment,event)
-}
-// TuiUpdateParts = tup
-#[derive(Debug)]
-enum tup{
-    Topic(String),
-    MessageText(String),
-    MessageProtobuf(Vec<u8>),
-    SpecProtobuf(String),
-    PeerID(PeerId),
-}
-
-#[derive(Debug)]
-enum ViewSpec {
-    ViewName(String),
-    ViewIdS(String),
-    ViewIdI(i32)
-}
-
-// cursive allows to store a user data in it's runtime so this struct is for that purpose
-#[derive(Debug)]
-struct TheApiUserData {
-    input_sender: tokio::sync::mpsc::Sender<Box<String>>,
-    libp2p_network_id: String,
-    command_line_opts: Box<Arguments>,
-}
 //tui_update_receiver: std::sync::mpsc::Receiver<Box<TuiUpdate>>,
 
 // Cursive  UI has 2 phases
@@ -81,29 +39,26 @@ struct TheApiUserData {
 //
 //
 pub fn terminal_user_interface(
-    // Topic , Message
-    input_sender: tokio::sync::mpsc::Sender<Box<TuiUpdate>>,
-    libp2p_network_id: String,
-    command_line_opts: Box<Arguments>,
+    input_sender: tokio::sync::mpsc::Sender<Box<String>>,
+    lib_p2p_network_id: PeerId,
+    command_line_opts: CliArguments,
+    mut curs : CursiveRunnable,
 )
 {
     // Initialize Cursive TUI
     cursive::logger::init();
 
-    let mut curs = CursiveChannelRunner::new(
-        cursive::Cursive::new(),
-        backends::crossterm,
-        update_receiver);
-
-    //todo:light color scheme
     //dark color scheme
-    curs.load_toml(include_str!("colors.toml")).unwrap();
-    let user_data = TheApiUserData {
+    if command_line_opts.theme != Some(Theme::Light) {
+        curs.load_toml(include_str!("colors.toml")).unwrap();
+    }
+
+    curs.set_user_data( TheApiUserData {
         input_sender,
-        libp2p_network_id: libp2p_network_id.clone(),
-        command_line_opts: command_line_opts.clone(),
-    };
-    curs.set_user_data(user_data); //value as &dyn Any
+        lib_p2p_network_id,
+        command_line_opts,
+    });
+
     curs.add_global_callback(
         cursive::event::Event::CtrlChar('d'),
         move |s: &mut Cursive| {
@@ -146,7 +101,7 @@ pub fn terminal_user_interface(
         .scrollable();
 
     let instance_info_view = TextView::new(
-        format!("Peer ID: {} Command Arguments: {}", libp2p_network_id, command_line_opts))
+        format!("Peer ID: {} Command Arguments: {:?}", lib_p2p_network_id, command_line_opts))
         .with_name("instance_info")
         .full_width()
         .min_height(2);
@@ -171,7 +126,7 @@ pub fn terminal_user_interface(
     curs.add_layer(scope_screen);
     curs.run();
 }
-// inital callbacks for declaritive phase
+// callbacks to customize the ui during declarative cursive phase to prepare the running phase
 fn new_user_message(s: &mut Cursive, message: &str) {
     s.call_on_name("monolith_chat_view", |v: &mut TextView| {
         v.append(format!("{}\r", message))
@@ -198,34 +153,70 @@ fn dlg_on_quit(s: &mut Cursive) {
     );
 }
 
-//  cb_sink send callbacks
-//
-// fn append_to_tui_view(cb_sink: Box<&CbSink>,view_name: &str, from_id_c: String, message_c: String) {
-//     let from_id = from_id_c.clone();
-//     let message = message_c.clone();
-//     match view_name {
-//         "monolith_chat_view" => {
-//             cb_sink.send(Box::new( move |s| {
-//                 s.call_on_name("monolith_chat_view", |view: &mut TextView| {
-//                     view.append(format!("From {}: {}\r", from_id, message));
-//                 }); })).unwrap();
-//         }
-//         "output_view" => {
-//             cb_sink.send (Box::new(move |s| {
-//                 s.call_on_name("output_view", |view: &mut TextView| {
-//                     view.append(format!("{}\r", message));
-//                 });
-//             })).unwrap();
-//         }
-//         _ => {
-//             let out_message =
-//                 format!("Unknown view\"{}\" message: \"{}\"\r", String::from(view_name), message);
-//
-//             cb_sink.send(Box::new( move |s| {
-//                 s.call_on_name("output_view", |view: &mut TextView| {
-//                     view.append(out_message);
-//                 });
-//             })).unwrap();
-//         }
-//     }
-// }
+
+pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Callback {
+        match ui_update {
+            ui_update::TextMessage(Tup::Topic("monolith"),Tup(peer_id),Tup(message)) => {
+                Box::new(move |s : &mut Cursive| {
+                    s.call_on_name("monolith_chat_view", |view: &mut TextView| {
+                        view.append(format!("ⅈ{:?}ⅈSENT\r    {}\r", peer_id, message));})
+                        .unwrap();
+                    }).unwrap()
+            }
+            ui_update::TerminalOutput(Tup::MessageText(message)) =>{
+                Box::new(move |s : &mut Cursive| {
+                 s.call_on_name("output_view",
+                                |view: &mut TextView| { view.append(format!("{}\r", message));})
+                     .unwrap()
+                 }).unwrap()
+            }
+            _ => {
+                let out_message =format!("Update Unimplemented: \"{:?}\"\r", ui_update);
+                Box::new(move |s : &mut Cursive| {
+                 s.call_on_name("output_view",
+                                |view: &mut TextView| { view.append(out_message); })
+                     .unwrap();
+                }).unwrap()
+            }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum UiUpdate {
+    // Todo: Add Times for events
+    // Many of these are preliminary
+    // The purpose is to create types that are independent of UI implementation
+    TextMessage(Tup::Topic(string), Tup::PeerID(), Tup::MessageText()),
+    InputMessage(Tup::Topic, Tup::MessageText()),
+    ProtobufMessage(Tup::Topic, Tup::PeerID(), Tup::SpecProtobuf(), Tup::MessageProtobuf()),
+    // arbitrary program output to output_view
+    TerminalOutput(Tup::MessageText()),
+    // Prehaps too Cursive implementation specific
+    AppendToView(ViewSpec, String),
+    NewViewContent(ViewSpec, String),
+    // NewEvent(time,source,environment,event)
+}
+//the UiUpdatePart = Tup
+#[derive(Debug)]
+pub(crate) enum Tup {
+    Topic(String),
+    MessageText(String),
+    MessageProtobuf(Vec<u8>),
+    SpecProtobuf(String),
+    PeerID(PeerId),
+}
+
+#[derive(Debug)]
+pub(crate) enum ViewSpec {
+    ViewName(String),
+    ViewIdS(String),
+    ViewIdI(i32)
+}
+
+// cursive allows to store a user data in it's runtime so this struct is for maximizing that.
+#[derive(Debug)]
+pub(crate) struct TheApiUserData {
+    input_sender: tokio::sync::mpsc::Sender<Box<String>>,
+    lib_p2p_network_id: PeerID,
+    command_line_opts: CliArguments,
+}

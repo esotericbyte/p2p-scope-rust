@@ -30,9 +30,8 @@
 
 
 mod cursive_tui;
-mod cursive_channel_runner;
 
-use crate::cursive_tui::{TuiUpdate, Tup};
+use crate::cursive_tui::{UiUpdate, Tup, ui_update_to_cursive_callback};
 use crate::cursive_tui::terminal_user_interface;
 
 // Lib p2p and related includes
@@ -54,21 +53,11 @@ use std::sync::mpsc;
 // easy command line options
 use clap::Parser;
 
-// Cursive TUI api
-use cursive;
-use cursive::{CbSink, Cursive};
-use cursive::direction::Orientation::{Horizontal, Vertical};
-use cursive::theme::*;
-use cursive::traits::*;
-use cursive::view::{Nameable, Position, Scrollable};
-use cursive::views::{
-    Button, Dialog, EditView, LinearLayout, Panel, ResizedView, ScrollView, TextView,
-};
 
 // Argument parsing initialization
 #[derive(Parser, Default, Debug)]
 #[clap(author = "John Hall et. al.", version, about)]
-struct Arguments {
+struct CliArguments {
     #[arg(long, value_enum)]
     listen_mode: Option<ListenMode>,
     theme: Option<Theme>,
@@ -97,7 +86,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // env_logger::init();
     //parse command line arguments
 
-    let clap_args = Arguments::parse();
+    let clap_args = CliArguments::parse();
     let args_text = format!("cli args: {:?}", clap_args);
 
     // INIT libp2p
@@ -223,14 +212,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     let (input_sender, input_receiver) =
         tokio::sync::mpsc::channel::<Box<String>>(32);
-    let (update_sender std::sync::mpsc::Sender<Box<TuiUpdate>>, update_receiver) = std::sync::mpsc::channel();
+    let (update_sender, update_receiver) =
+        std::sync::mpsc::channel::<Box<TuiUpdate>>();
+    let mut curs = cursive::default();
+    let cb_sink = curs.cb_sink();
 
-    let tui_handle = std::thread::spawn(move || {
-        terminal_user_interface(input_sender.clone(), &peer_id, &clap_args);
+    let _tui_handle = std::thread::spawn(move || {
+        terminal_user_interface(input_sender.clone(),
+                                peer_id,
+                                clap_args.clone(),
+                                curs)
     });
+    let t_o_cb_sink = cb_sink.clone();
 
 
-
+    let terminal_output =move |output:String| {
+        t_o_cb_send(ui_update_to_cursive_callback(
+            TerminalOutput(tup::MessageText(output)))).unwrap();
+    };
     // Kick it off
     loop {
         tokio::select! {
