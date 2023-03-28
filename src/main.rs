@@ -30,10 +30,9 @@
 
 
 mod cursive_tui;
-
 use crate::cursive_tui::{UiUpdate, Tup, ui_update_to_cursive_callback};
 use crate::cursive_tui::terminal_user_interface;
-
+use crate::cursive_tui::CuCallback;
 // Lib p2p and related includes
 use libp2p::core::{ConnectedPoint};
 use libp2p::swarm::ConnectionError::KeepAliveTimeout;
@@ -147,17 +146,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .behaviour_mut()
         .floodsub
         .subscribe(floodsub_topic.clone());
-    // NOW get the cb_sink And BLOCK so that terminal output is available
-    let cb_sink = cb_sink_receiver.blocking_recv().unwrap();
-    // this feels like precarious plumbing  - let go and let rust
-    let terminal_output = | output| {
-        append_to_tui_view(cb_sink.clone(),"output_view",
-                           String::from(""), output);
-    };
-    let send_user_message = |from_id: String, user_message : String| {
-        append_to_tui_view(cb_sink.clone(),"monolith_chat_view",
-                           from_id, user_message);
-    };
 
     // Reach out to another node if specified
     match clap_args.dial {
@@ -208,27 +196,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
             swarm.listen_on(maddr)?;
         }
     }
-// setup and spawn the terminal interface in a new thread
-
+// Stage the channels
     let (input_sender, input_receiver) =
         tokio::sync::mpsc::channel::<Box<String>>(32);
     let (update_sender, update_receiver) =
         std::sync::mpsc::channel::<Box<TuiUpdate>>();
     let mut curs = cursive::default();
     let cb_sink = curs.cb_sink();
-
+// A regular sync thread running along side of the tokio runtime.
     let _tui_handle = std::thread::spawn(move || {
         terminal_user_interface(input_sender.clone(),
                                 peer_id,
                                 clap_args.clone(),
                                 curs)
     });
+// A regular sync thread running along side of the tokio runtime.
     let t_o_cb_sink = cb_sink.clone();
-
-
     let terminal_output =move |output:String| {
-        t_o_cb_send(ui_update_to_cursive_callback(
-            TerminalOutput(tup::MessageText(output)))).unwrap();
+        t_o_cb_sink.send((ui_update_to_cursive_callback(
+            UiUpdate::TerminalOutput(Tup::MessageText(output))))).unwrap();
     };
     // Kick it off
     loop {

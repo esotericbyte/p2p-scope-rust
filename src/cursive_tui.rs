@@ -1,22 +1,20 @@
 
 // Cursive TUI api
 use cursive;
-use cursive::{Callback, CbSink, crossterm, Cursive, CursiveRunnable};
+use cursive::{ CbSink, crossterm, Cursive, CursiveRunnable};
 use cursive::direction::Orientation::{Horizontal, Vertical};
 use cursive::traits::*;
 use cursive::view::{Nameable, Position, Scrollable};
 use cursive::views::{
     Button, Dialog, EditView, LinearLayout, Panel, ResizedView, ScrollView, TextView,
 };
-
+type CursiveCallback = dyn FnOnce(&mut Cursive) + Send;
 use std::sync::mpsc;
 // fully specify tokio::sync::mpsc
 use std::sync::Mutex;
 use std::sync::Arc;
-use cursive::event::Callback;
 use crate::{Multiaddr, PeerId, CliArguments, Theme};
 
-//tui_update_receiver: std::sync::mpsc::Receiver<Box<TuiUpdate>>,
 
 // Cursive  UI has 2 phases
 // In the first phase the UI is declared
@@ -31,13 +29,12 @@ use crate::{Multiaddr, PeerId, CliArguments, Theme};
 // Tokio runtime is completely different from cursive. They are 2 separate event loops and will be
 // run in separate threads.
 //
-// Current plan is for Cursive to run in a standard thread and for tokio in the main thread running
-// the tokio runtime defined by the tokio main macro.
+// Cursive to runs in a standard thread and the rest of the app uses the tokio runtime for main.
 //
 // This next function will be run in a separate thread.
-// To change the ui, the callback sync provided by Cursive is sent by a oneshot channel.
-//
-//
+// Before using it the channels and an empty Cursive runner must be created and passed
+// while retaining a cb_sink channel to send callbacks to the new thread.
+
 pub fn terminal_user_interface(
     input_sender: tokio::sync::mpsc::Sender<Box<String>>,
     lib_p2p_network_id: PeerId,
@@ -154,29 +151,31 @@ fn dlg_on_quit(s: &mut Cursive) {
 }
 
 
-pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Callback {
+pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Box<CursiveCallback> {
         match ui_update {
-            ui_update::TextMessage(Tup::Topic("monolith"),Tup(peer_id),Tup(message)) => {
+            UiUpdate::TextMessage(
+                Tup::Topic(String_from("monolith")),Tup(peer_id),Tup(message)) => {
                 Box::new(move |s : &mut Cursive| {
                     s.call_on_name("monolith_chat_view", |view: &mut TextView| {
                         view.append(format!("ⅈ{:?}ⅈSENT\r    {}\r", peer_id, message));})
-                        .unwrap();
-                    }).unwrap()
+                        .unwrap()
+                    })
             }
-            ui_update::TerminalOutput(Tup::MessageText(message)) =>{
+            UiUpdate::TerminalOutput(Tup::MessageText(message)) =>{
                 Box::new(move |s : &mut Cursive| {
-                 s.call_on_name("output_view",
-                                |view: &mut TextView| { view.append(format!("{}\r", message));})
-                     .unwrap()
-                 }).unwrap()
+                    s.call_on_name("output_view",
+                                   |view: &mut TextView|
+                                       { view.append(format!("{}\r", message)); })
+                        .unwrap()
+                })
             }
             _ => {
                 let out_message =format!("Update Unimplemented: \"{:?}\"\r", ui_update);
                 Box::new(move |s : &mut Cursive| {
                  s.call_on_name("output_view",
                                 |view: &mut TextView| { view.append(out_message); })
-                     .unwrap();
-                }).unwrap()
+                     .unwrap()
+                })
             }
     }
 }
