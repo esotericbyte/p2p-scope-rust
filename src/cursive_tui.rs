@@ -4,11 +4,11 @@ use cursive;
 use cursive::{ CbSink, crossterm, Cursive, CursiveRunnable};
 use cursive::direction::Orientation::{Horizontal, Vertical};
 use cursive::traits::*;
-use cursive::view::{Nameable, Position, Scrollable};
-use cursive::views::{
+pub use cursive::view::{Nameable, Position, Scrollable};
+pub use cursive::views::{
     Button, Dialog, EditView, LinearLayout, Panel, ResizedView, ScrollView, TextView,
 };
-type CursiveCallback = dyn FnOnce(&mut Cursive) + Send;
+pub type CursiveCallback = dyn FnOnce(&mut Cursive) + Send;
 use std::sync::mpsc;
 // fully specify tokio::sync::mpsc
 use std::sync::Mutex;
@@ -18,22 +18,8 @@ use crate::{Multiaddr, PeerId, CliArguments, Theme};
 
 // Cursive  UI has 2 phases
 // In the first phase the UI is declared
-// In the second phase it is run on an event loop in a standard syncronous thread.
-//
-// The primary way it to communicate into the thread during the run phase is a
-// callback sync which i think is an mpsc channel under the hood.
-// Callbacks in the form of closures are the primary way to send changes to the runtime.
-// There is a 'user data' instance within the thread and I've used this to send data out of the
-// Thread to the tokio runtime.
-//
-// Tokio runtime is completely different from cursive. They are 2 separate event loops and will be
-// run in separate threads.
-//
-// Cursive to runs in a standard thread and the rest of the app uses the tokio runtime for main.
-//
-// This next function will be run in a separate thread.
-// Before using it the channels and an empty Cursive runner must be created and passed
-// while retaining a cb_sink channel to send callbacks to the new thread.
+// In the second phase it is run on an event loop in a standard synchronous thread.
+// See  "More about Cursive.md for more notes on this UI implementation"
 
 pub fn terminal_user_interface(
     input_sender: tokio::sync::mpsc::Sender<Box<String>>,
@@ -154,7 +140,9 @@ fn dlg_on_quit(s: &mut Cursive) {
 pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Box<CursiveCallback> {
         match ui_update {
             UiUpdate::TextMessage(
-                Tup::Topic(String_from("monolith")),Tup(peer_id),Tup(message)) => {
+                Tup::Topic(string_from("monolith")),
+                Tup::PeerID(peer_id),
+                Tup::MesageText(message)) => {
                 Box::new(move |s : &mut Cursive| {
                     s.call_on_name("monolith_chat_view", |view: &mut TextView| {
                         view.append(format!("ⅈ{:?}ⅈSENT\r    {}\r", peer_id, message));})
@@ -179,21 +167,18 @@ pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Box<CursiveCallback
             }
     }
 }
-
+//Implementation independent UI message types
 #[derive(Debug)]
 pub(crate) enum UiUpdate {
-    // Todo: Add Times for events
-    // Many of these are preliminary
-    // The purpose is to create types that are independent of UI implementation
-    TextMessage(Tup::Topic(string), Tup::PeerID(), Tup::MessageText()),
-    InputMessage(Tup::Topic, Tup::MessageText()),
-    ProtobufMessage(Tup::Topic, Tup::PeerID(), Tup::SpecProtobuf(), Tup::MessageProtobuf()),
+    // Todo: Add Times for events and times between them
+    // NewEvent(time,source,event,environment,related)
+    TextMessage(Tup,Tup,Tup),//Topic, PeerID, String
+    InputMessage(String),// MessageText
     // arbitrary program output to output_view
-    TerminalOutput(Tup::MessageText()),
-    // Prehaps too Cursive implementation specific
+    TerminalOutput(String),
     AppendToView(ViewSpec, String),
-    NewViewContent(ViewSpec, String),
-    // NewEvent(time,source,environment,event)
+    ReplaceViewContent(ViewSpec, String),
+
 }
 //the UiUpdatePart = Tup
 #[derive(Debug)]

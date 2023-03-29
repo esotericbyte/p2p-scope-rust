@@ -30,9 +30,8 @@
 
 
 mod cursive_tui;
-use crate::cursive_tui::{UiUpdate, Tup, ui_update_to_cursive_callback};
-use crate::cursive_tui::terminal_user_interface;
-use crate::cursive_tui::CuCallback;
+
+use crate::{UiUpdate, Tup, ui_update_to_cursive_callback, terminal_user_interface, CursiveCallback};
 // Lib p2p and related includes
 use libp2p::core::{ConnectedPoint};
 use libp2p::swarm::ConnectionError::KeepAliveTimeout;
