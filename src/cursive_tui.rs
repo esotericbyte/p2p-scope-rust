@@ -9,12 +9,9 @@ pub use cursive::views::{
     Button, Dialog, EditView, LinearLayout, Panel, ResizedView, ScrollView, TextView,
 };
 pub type CursiveCallback = dyn FnOnce(&mut Cursive) + Send;
-use std::sync::mpsc;
 // fully specify tokio::sync::mpsc
-use std::sync::Mutex;
-use std::sync::Arc;
-use crate::{Multiaddr, PeerId, CliArguments, Theme};
-
+use libp2p::{Multiaddr, PeerId};
+use crate::{CliArguments, Theme};
 
 // Cursive  UI has 2 phases
 // In the first phase the UI is declared
@@ -25,15 +22,27 @@ pub fn terminal_user_interface(
     input_sender: tokio::sync::mpsc::Sender<Box<String>>,
     lib_p2p_network_id: PeerId,
     command_line_opts: CliArguments,
-    mut curs : CursiveRunnable,
+    cb_sync_sender: tokio::sync::oneshot::Sender<CbSink>
 )
 {
+    let mut curs = cursive::default();
+    cb_sync = curs.cb_sink();
+    cb_sync_sender.send(cb_sync);
+
     // Initialize Cursive TUI
     cursive::logger::init();
 
     //dark color scheme
-    if command_line_opts.theme != Some(Theme::Light) {
-        curs.load_toml(include_str!("colors.toml")).unwrap();
+    match command_line_opts.theme {
+        Some(Theme::Light) => {
+            (); //For now use defaults for light theme
+        }
+        Some(Theme::Dark) => {
+            curs.load_toml(include_str!("colors.toml")).unwrap();
+        }
+        None => {
+            curs.load_toml(include_str!("colors.toml")).unwrap();
+        }
     }
 
     curs.set_user_data( TheApiUserData {
@@ -109,6 +118,7 @@ pub fn terminal_user_interface(
     curs.add_layer(scope_screen);
     curs.run();
 }
+
 // callbacks to customize the ui during declarative cursive phase to prepare the running phase
 fn new_user_message(s: &mut Cursive, message: &str) {
     s.call_on_name("monolith_chat_view", |v: &mut TextView| {
@@ -116,7 +126,7 @@ fn new_user_message(s: &mut Cursive, message: &str) {
     });
     s.call_on_name("user_message_input", |v: &mut EditView| v.set_content(""));
     let ud: &TheApiUserData = s.user_data().unwrap();
-    ud.user_message_sender
+    ud.input_sender
         .blocking_send(Box::new(message.to_string()))
         .unwrap();
     //TODO: add messages to history
@@ -136,20 +146,26 @@ fn dlg_on_quit(s: &mut Cursive) {
     );
 }
 
-
 pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Box<CursiveCallback> {
         match ui_update {
-            UiUpdate::TextMessage(
-                Tup::Topic(string_from("monolith")),
-                Tup::PeerID(peer_id),
-                Tup::MesageText(message)) => {
-                Box::new(move |s : &mut Cursive| {
-                    s.call_on_name("monolith_chat_view", |view: &mut TextView| {
-                        view.append(format!("ⅈ{:?}ⅈSENT\r    {}\r", peer_id, message));})
-                        .unwrap()
+            UiUpdate::TextMessage(topic , peer_id , message) => {
+                if topic == String::from("monolith") {
+                    Box::new(move |s: &mut Cursive| {
+                        s.call_on_name("monolith_chat_view", |view: &mut TextView| {
+                            view.append(format!("ⅈ{:?}ⅈSENT\r    {}\r", peer_id, message));
+                        })
+                            .unwrap()
                     })
+                } else {
+                        let out_message =format!("Update Unimplemented: \"{:?}\"\r", ui_update);
+                        Box::new(move |s : &mut Cursive| {
+                            s.call_on_name("output_view",
+                                           |view: &mut TextView| { view.append(out_message); })
+                                .unwrap()
+                        })
+                    }
             }
-            UiUpdate::TerminalOutput(Tup::MessageText(message)) =>{
+            UiUpdate::TerminalOutput(message) =>{
                 Box::new(move |s : &mut Cursive| {
                     s.call_on_name("output_view",
                                    |view: &mut TextView|
@@ -172,7 +188,7 @@ pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Box<CursiveCallback
 pub(crate) enum UiUpdate {
     // Todo: Add Times for events and times between them
     // NewEvent(time,source,event,environment,related)
-    TextMessage(Tup,Tup,Tup),//Topic, PeerID, String
+    TextMessage(String,PeerId,String),//Topic, PeerID, Message
     InputMessage(String),// MessageText
     // arbitrary program output to output_view
     TerminalOutput(String),
@@ -181,14 +197,20 @@ pub(crate) enum UiUpdate {
 
 }
 //the UiUpdatePart = Tup
-#[derive(Debug)]
-pub(crate) enum Tup {
-    Topic(String),
-    MessageText(String),
-    MessageProtobuf(Vec<u8>),
-    SpecProtobuf(String),
-    PeerID(PeerId),
-}
+// This idea of string flags might be done instead by creating an impl
+// for an emum with constructors the values in the tuple wih it's function
+// parameter names.
+// It isn't possible to use a partial value (enum variant) for a Type name
+// It's no longer very concise to use Tup type in UiUpdate and then specify
+// or only match the constraints.
+// #[derive(Debug)]
+// pub(crate) enum Tup {
+//     Topic(String),
+//     MessageText(String),
+//     MessageProtobuf(Vec<u8>),
+//     SpecProtobuf(String),
+//     PeerID(PeerId),
+// }
 
 #[derive(Debug)]
 pub(crate) enum ViewSpec {
@@ -201,6 +223,6 @@ pub(crate) enum ViewSpec {
 #[derive(Debug)]
 pub(crate) struct TheApiUserData {
     input_sender: tokio::sync::mpsc::Sender<Box<String>>,
-    lib_p2p_network_id: PeerID,
+    lib_p2p_network_id: PeerId,
     command_line_opts: CliArguments,
 }
