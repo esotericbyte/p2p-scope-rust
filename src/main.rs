@@ -49,6 +49,8 @@ use std::error::Error;
 use tokio;
 use tokio::io::AsyncBufReadExt;
 use std::sync::mpsc;
+use std::thread::sleep;
+use std::time::Duration;
 // Command line arguments defined for clap at the end of this file
 use clap::Parser;
 use cursive::CbSink;
@@ -72,22 +74,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 
     // Stage the channels and functions used to communicate between tokio and the UI thread
-    let (input_sender, input_receiver) =
+    let (input_sender,mut input_receiver) =
         tokio::sync::mpsc::channel::<Box<String>>(32);
-    let (update_sender, update_receiver) =
-        std::sync::mpsc::channel::<Box<UiUpdate>>();
-    let (cb_sync_sender,cb_sync_receiver) = tokio::sync::oneshot();
-
-
+    //let (update_sender,mut update_receiver) =
+    //   std::sync::mpsc::channel::<Box<UiUpdate>>();
+    let (cb_sync_sender,
+        mut cb_sync_receiver) = tokio::sync::oneshot::channel();
+    let clap_args_clone = clap_args.clone(); //clone is a value to move
     // A regular sync thread running along side of the tokio runtime.
     let _tui_handle = std::thread::spawn(move || {
         terminal_user_interface(input_sender.clone(),
                                 peer_id,
-                                clap_args.clone(),
-                                cb_sync_sender)
+                                clap_args_clone,
+                                cb_sync_sender);
     });
 
-    let cb_sink = cb_sync_receiver.recv();//get the callback channel from the new thread!
+    let cb_sink = cb_sync_receiver.await.unwrap();// get callback channel from new thread
 
     let cb_sink_clone = cb_sink.clone();// avoid loosing cb_sink
     let terminal_output =move |output:String| {
@@ -220,7 +222,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     SwarmEvent::Behaviour(MyBehaviourEvent::Floodsub(
                         FloodsubEvent::Message(message))) => {
                         let message_string = String::from_utf8(message.data).unwrap();
-                        let t =message.topics;
+                        // let t =message.topics;
                         // ToDo: learn about the Vec<Topics> part of the Floodsub message. convert.
                         (send_ui_update)(
                             UiUpdate::TextMessage( String::from("monolith"),
@@ -272,7 +274,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 // Argument parsing initialization
 #[derive(Parser, Default, Debug, Clone)]
 #[clap(author = "John Hall et. al.", version, about)]
-pub(crate) struct CliArguments {
+pub struct CliArguments {
     #[arg(long, value_enum)]
     listen_mode: Option<ListenMode>,
     theme: Option<Theme>,

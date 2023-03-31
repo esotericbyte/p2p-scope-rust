@@ -26,8 +26,8 @@ pub fn terminal_user_interface(
 )
 {
     let mut curs = cursive::default();
-    cb_sync = curs.cb_sink();
-    cb_sync_sender.send(cb_sync);
+    let mut cb_sink = curs.cb_sink().clone();
+    cb_sync_sender.send(cb_sink);
 
     // Initialize Cursive TUI
     cursive::logger::init();
@@ -48,7 +48,7 @@ pub fn terminal_user_interface(
     curs.set_user_data( TheApiUserData {
         input_sender,
         lib_p2p_network_id,
-        command_line_opts,
+        command_line_opts: command_line_opts.clone(),
     });
 
     curs.add_global_callback(
@@ -157,10 +157,12 @@ pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Box<CursiveCallback
                             .unwrap()
                     })
                 } else {
-                        let out_message =format!("Update Unimplemented: \"{:?}\"\r", ui_update);
+                        let out_message= format!("Update Unimplemented: \"{:?}\"\r",
+                        UiUpdate::TextMessage(topic,peer_id,message));
                         Box::new(move |s : &mut Cursive| {
                             s.call_on_name("output_view",
-                                           |view: &mut TextView| { view.append(out_message); })
+                                           |view: &mut TextView| {
+                                               view.append(out_message); })
                                 .unwrap()
                         })
                     }
@@ -185,7 +187,7 @@ pub fn ui_update_to_cursive_callback(ui_update: UiUpdate) -> Box<CursiveCallback
 }
 //Implementation independent UI message types
 #[derive(Debug)]
-pub(crate) enum UiUpdate {
+pub enum UiUpdate {
     // Todo: Add Times for events and times between them
     // NewEvent(time,source,event,environment,related)
     TextMessage(String,PeerId,String),//Topic, PeerID, Message
@@ -213,7 +215,7 @@ pub(crate) enum UiUpdate {
 // }
 
 #[derive(Debug)]
-pub(crate) enum ViewSpec {
+pub enum ViewSpec {
     ViewName(String),
     ViewIdS(String),
     ViewIdI(i32)
