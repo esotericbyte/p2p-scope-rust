@@ -32,7 +32,9 @@
 
 mod cursive_tui;
 
-use crate::cursive_tui::{UiUpdate, ui_update_to_cursive_callback, terminal_user_interface, CursiveCallback};
+use crate::cursive_tui::{UiUpdate, CursiveCallback,
+                         ui_update_to_cursive_callback,
+                         terminal_user_interface};
 // Lib p2p and related includes
 use libp2p::core::{ConnectedPoint};
 use libp2p::swarm::ConnectionError::KeepAliveTimeout;
@@ -41,7 +43,7 @@ pub(crate) use libp2p::{
     floodsub::{self, Floodsub, FloodsubEvent},
     futures::StreamExt,
     identity, mdns, mplex, noise,
-    swarm::{NetworkBehaviour, Swarm, SwarmEvent},
+    swarm::{keep_alive, NetworkBehaviour, Swarm, SwarmEvent},
     tcp, Multiaddr, PeerId, Transport,
 };
 
@@ -54,14 +56,14 @@ use std::time::Duration;
 // Command line arguments defined for clap at the end of this file
 use clap::Parser;
 use cursive::CbSink;
+use libp2p::swarm::KeepAlive;
 
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Init Tracing. For mostly using logging features 
+    // todo:Init Tracing
     
-    //
-    //
+
     //parse command line arguments
 
     let clap_args = CliArguments::parse();
@@ -104,7 +106,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Create a tokio-based TCP transport use noise for authenticated
     // encryption and Mplex for multiplexing of substreams on a TCP stream.
-    let transport = tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
+    let transport =
+        tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
         .upgrade(upgrade::Version::V1)
         .authenticate(
             noise::NoiseAuthenticated::xx(&id_keys)
@@ -119,38 +122,51 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // We create a custom  behaviour that combines floodsub and mDNS.
     // The derive generates a delegating `NetworkBehaviour` impl.
     #[derive(NetworkBehaviour)]
-    #[behaviour(out_event = "MyBehaviourEvent")]
-    struct MyBehaviour {
+    #[behaviour(out_event = "AppBehaviourEvent")]
+    struct AppBehaviour {
+        // keep_alive: keep_alive::Behaviour,
         floodsub: Floodsub,
         mdns: mdns::tokio::Behaviour,
     }
 
+
     #[derive(Debug)]
     #[allow(clippy::large_enum_variant)]
-    enum MyBehaviourEvent {
+    enum AppBehaviourEvent {
+        // KeepAlive(KeepAlive),
         Floodsub(FloodsubEvent),
         Mdns(mdns::Event),
     }
 
-    impl From<FloodsubEvent> for MyBehaviourEvent {
+    // impl From<KeepAlive> for AppBehaviourEvent{
+    //     fn from(event: KeepAlive) -> Self {
+    //         AppBehaviourEvent::KeepAlive(event)
+    //     }
+    // }
+
+    impl From<FloodsubEvent> for AppBehaviourEvent {
         fn from(event: FloodsubEvent) -> Self {
-            MyBehaviourEvent::Floodsub(event)
+            AppBehaviourEvent::Floodsub(event)
         }
     }
 
-    impl From<mdns::Event> for MyBehaviourEvent {
+    impl From<mdns::Event> for AppBehaviourEvent {
         fn from(event: mdns::Event) -> Self {
-            MyBehaviourEvent::Mdns(event)
+            AppBehaviourEvent::Mdns(event)
         }
     }
 
     // Create a Swarm to manage peers and events.
-    let mdns_behaviour = mdns::Behaviour::new(Default::default(), peer_id)?;
-    let behaviour = MyBehaviour {
+    let mdns_behaviour =
+        mdns::Behaviour::new(Default::default(), peer_id)?;
+    // let stay_alive = keep_alive::Behaviour::new(libp2p::swarm::KeepAlive::Yes);
+    let behaviour = AppBehaviour {
+        // keep_alive: stay_alive,
         floodsub: Floodsub::new(peer_id),
         mdns: mdns_behaviour,
     };
-    let mut swarm = Swarm::with_tokio_executor(transport, behaviour, peer_id);
+    let mut swarm =
+        Swarm::with_tokio_executor(transport, behaviour, peer_id);
     swarm
         .behaviour_mut()
         .floodsub
@@ -171,39 +187,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Replaced by Tui
     // Read full lines from stdin
     // let mut stdin = io::BufReader::new(io::stdin()).lines();
-
-    let all_ports = "/ip4/0.0.0.0/tcp/0".parse()?;
-    let local_port = "/ip4/127.0.0.0/tcp/0".parse()?;
+    // Listen mode takes president over listen which can be given multiple times.
+    // Listening on all networks is the default if neither are specified
+    let all_nets_addr :Multiaddr = "/ip4/0.0.0.0/tcp/0".parse()?;
+    let localhost_addr :Multiaddr = "/ip4/127.0.0.1/tcp/0".parse()?;
     let mut no_listen = false;
+    let mut default_listen_all= false;
+
+    if let None = clap_args.listen_mode{
+        if let Some(addrs_vec) = clap_args.listen {
+            for addr in addrs_vec{
+                swarm.listen_on(addr.clone())?;
+            }
+        } else {
+            // no listen mode or specified addr/ port so default to all!
+            default_listen_all = true;
+            swarm.listen_on(all_nets_addr.clone())?;
+        }
+    }
+
     if let Some(ListenMode) = clap_args.listen_mode {
         match ListenMode {
             // Listen on all interfaces and whatever port the OS assigns
             ListenMode::All => {
-                swarm.listen_on(all_ports)?;
+                swarm.listen_on(all_nets_addr.clone())?;
             }
-            ListenMode::NoListen => {
-                (terminal_output)(format!("Not listening! La La la La La!"));
+            ListenMode::DoNotListen => {
+                (terminal_output)(format!("Not listening! La! La! La!"));
                 no_listen = true;
             }
             ListenMode::Localhost => {
-                swarm.listen_on(local_port)?;
+                swarm.listen_on(localhost_addr.clone())?;
             }
-            ListenMode::Lan => {
-                swarm.listen_on(all_ports)?;
-                (terminal_output)(format!("LAN limitation unimplemented"));
-            }
+            // ListenMode::Lan => {
+            //     swarm.listen_on(all_ports)?;
+            //     (terminal_output)(format!("LAN limitation unimplemented"));
+            //}
         }
     }
+
     let listeners = swarm.listeners();
     (terminal_output)("LISTENERS:\r".to_string());
     for ma in listeners {
         (terminal_output)(format!("{:?}\r", ma));
-    }
-
-    if let Some(maddr) = clap_args.listen_on {
-        if !no_listen {
-            swarm.listen_on(maddr)?;
-        }
     }
 
     // Kick it off
@@ -214,12 +240,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 swarm.behaviour_mut().floodsub.publish_any(
                     floodsub_topic.clone(), message);
             }
+            //Todo:handle other messages, terminate message, topics, layout changes,
+            //  event list, menubar, text commands.
             event = swarm.select_next_some() => {
                 match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         (terminal_output)(format!("Listening on {address:?}"));
                     }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Floodsub(
+                    SwarmEvent::Behaviour(AppBehaviourEvent::Floodsub(
                         FloodsubEvent::Message(message))) => {
                         let message_string = String::from_utf8(message.data).unwrap();
                         // let t =message.topics;
@@ -230,7 +258,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                                 message_string)
                         );
                     }
-                    SwarmEvent::Behaviour(MyBehaviourEvent::Mdns(event)) => {
+                    SwarmEvent::Behaviour(AppBehaviourEvent::Mdns(event)) => {
                         match event {
                             mdns::Event::Discovered(list) => {
                                 for (peer, _) in list {
@@ -240,7 +268,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
                             mdns::Event::Expired(list) => {
                                 for (peer, _) in list {
                                     if !swarm.behaviour().mdns.has_node(&peer) {
-                                        swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer);
+                                        swarm.behaviour_mut()
+                                        .floodsub.remove_node_from_partial_view(&peer);
                                     }
                                 }
                             }
@@ -250,7 +279,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         (terminal_output)(format!("Connected!: '{:?}'",event));
                         swarm.behaviour_mut().floodsub.add_node_to_partial_view(peer_id);
                     }
-                    SwarmEvent::ConnectionClosed {peer_id, endpoint: ConnectedPoint::Dialer { address,.. },
+                    SwarmEvent::ConnectionClosed {
+                        peer_id,
+                        endpoint: ConnectedPoint::Dialer { address,.. },
                         cause: Some(KeepAliveTimeout),..} => {
                         swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
                         // Hanging up so rude! Redial !
@@ -260,10 +291,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     }
                     SwarmEvent::ConnectionClosed {peer_id,..} =>{
                         swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
-                        (terminal_output)(format!("DRAT!:{:?}", event));
+                        (terminal_output)(format!("CLOSED:{:?}", event));
                     }
                     other_swarm_event => {
-                        (terminal_output)(format!("EVENT: '{:?}'",other_swarm_event));
+                        (terminal_output)(format!("EVENT: {:?}",other_swarm_event));
                     }
                 }
             }
@@ -273,14 +304,20 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
 // Argument parsing initialization
 #[derive(Parser, Default, Debug, Clone)]
-#[clap(author = "John Hall et. al.", version, about)]
+#[clap(author = "John Hall", version, about)]
 pub struct CliArguments {
     #[arg(long, value_enum)]
+    /// Takes president over listen which can be given multiple times.
+    /// Listening on all networks is the default if neither are specified
     listen_mode: Option<ListenMode>,
+    /// Light ar dark theme can be picked. Default is light.
     theme: Option<Theme>,
     #[arg(long)]
+    /// Multiaddr to dial. --dial may be given multiple times.
     dial: Option<Vec<Multiaddr>>,
-    listen_on: Option<Multiaddr>,
+    /// Specify host network and port to listen on. May be given multiple times but is ignored
+    /// if listen-mode is also given.
+    listen: Option<Vec<Multiaddr>>,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -291,9 +328,10 @@ pub(crate) enum Theme{
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 pub(crate) enum ListenMode {
+    DoNotListen,
     All,
     Localhost,
-    Lan,
-    NoListen,
+    //Lan,
 }
+
 
