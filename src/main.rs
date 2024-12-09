@@ -29,25 +29,32 @@
 //! cargo run --example chat-tokio --features=full
 //! ```
 
-
+#![doc = include_str!("../README.md")]
 mod cursive_tui;
 
 use crate::cursive_tui::{UiUpdate, CursiveCallback,
                          ui_update_to_cursive_callback,
                          terminal_user_interface};
 // Lib p2p and related includes
-use libp2p::core::{ConnectedPoint};
-use libp2p::swarm::ConnectionError::KeepAliveTimeout;
-pub(crate) use libp2p::{
-    core::upgrade,
-    floodsub::{self, Floodsub, FloodsubEvent},
-    futures::StreamExt,
-    identity, mdns, mplex, noise,
-    swarm::{keep_alive, NetworkBehaviour, Swarm, SwarmEvent},
-    tcp, Multiaddr, PeerId, Transport,
+
+
+use std::{
+    collections::hash_map::DefaultHasher,
+    error::Error,
+    hash::{Hash, Hasher},
+    time::Duration,
+};
+
+use futures::stream::StreamExt;
+use libp2p::{
+    identity,
+    swarm::{SwarmBuilder, SwarmEvent},
+    tcp, yamux,
+    PeerId,
 };
 
 use std::error::Error;
+use std::str::FromStr;
 use tokio;
 use tokio::io::AsyncBufReadExt;
 use std::sync::mpsc;
@@ -57,12 +64,19 @@ use std::time::Duration;
 use clap::Parser;
 use cursive::CbSink;
 use libp2p::swarm::KeepAlive;
-
+use tokio::tracing_subscriber
+// custom network behavior so it can be exended
+#[derive(NetworkBehaviour)]
+struct MyBehaviour {
+    gossipsub: gossipsub::Behaviour,
+    // I dislike! mdns: mdns::tokio::Behaviour,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // todo:Init Tracing
-    
+// let _ = tracing_subscriber::fmt()
+//         .with_env_filter(EnvFilter::from_default_env())
+//         .try_init();    
 
     //parse command line arguments
 
@@ -104,73 +118,49 @@ async fn main() -> Result<(), Box<dyn Error>> {
         cb_sink_clone2.send(ui_update_to_cursive_callback(
             tui_update)).unwrap()};
 
-    // Create a tokio-based TCP transport use noise for authenticated
-    // encryption and Mplex for multiplexing of substreams on a TCP stream.
-    let transport =
-        tcp::tokio::Transport::new(tcp::Config::default().nodelay(true))
-        .upgrade(upgrade::Version::V1)
-        .authenticate(
-            noise::NoiseAuthenticated::xx(&id_keys)
-                .expect("Signing libp2p-noise static DH keypair failed."),
-        )
-        .multiplex(mplex::MplexConfig::new())
-        .boxed();
-
-    // Create a Floodsub topic.  Note changed in scope version.
-    let floodsub_topic = floodsub::Topic::new("monolith");
-
-    // We create a custom  behaviour that combines floodsub and mDNS.
-    // The derive generates a delegating `NetworkBehaviour` impl.
-    #[derive(NetworkBehaviour)]
-    #[behaviour(out_event = "AppBehaviourEvent")]
-    struct AppBehaviour {
-        // keep_alive: keep_alive::Behaviour,
-        floodsub: Floodsub,
-        mdns: mdns::tokio::Behaviour,
-    }
 
 
-    #[derive(Debug)]
-    #[allow(clippy::large_enum_variant)]
-    enum AppBehaviourEvent {
-        // KeepAlive(KeepAlive),
-        Floodsub(FloodsubEvent),
-        Mdns(mdns::Event),
-    }
-
-    // impl From<KeepAlive> for AppBehaviourEvent{
-    //     fn from(event: KeepAlive) -> Self {
-    //         AppBehaviourEvent::KeepAlive(event)
-    //     }
-    // }
-
-    impl From<FloodsubEvent> for AppBehaviourEvent {
-        fn from(event: FloodsubEvent) -> Self {
-            AppBehaviourEvent::Floodsub(event)
-        }
-    }
-
-    impl From<mdns::Event> for AppBehaviourEvent {
-        fn from(event: mdns::Event) -> Self {
-            AppBehaviourEvent::Mdns(event)
-        }
-    }
 
     // Create a Swarm to manage peers and events.
-    let mdns_behaviour =
-        mdns::Behaviour::new(Default::default(), peer_id)?;
-    // let stay_alive = keep_alive::Behaviour::new(libp2p::swarm::KeepAlive::Yes);
-    let behaviour = AppBehaviour {
-        // keep_alive: stay_alive,
-        floodsub: Floodsub::new(peer_id),
-        mdns: mdns_behaviour,
-    };
-    let mut swarm =
-        Swarm::with_tokio_executor(transport, behaviour, peer_id);
-    swarm
-        .behaviour_mut()
-        .floodsub
-        .subscribe(floodsub_topic.clone());
+    let mut swarm = libp2p::SwarmBuilder::with_new_identity()
+        .with_tokio()
+        .with_tcp(
+            tcp::Config::default(),
+            noise::Config::new,
+            yamux::Config::default,
+        )?
+        .with_quic()
+        .with_behaviour(|key| {
+            // To content-address message, we can take the hash of message and use it as an ID.
+            let message_id_fn = |message: &gossipsub::Message| {
+                let mut s = DefaultHasher::new();
+                message.data.hash(&mut s);
+                gossipsub::MessageId::from(s.finish().to_string())
+            };
+
+            // Set a custom gossipsub configuration
+            let gossipsub_config = gossipsub::ConfigBuilder::default()
+                .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
+                .validation_mode(gossipsub::ValidationMode::Strict) // This sets the kind of message validation. The default is Strict (enforce message
+                // signing)
+                .message_id_fn(message_id_fn) // content-address messages. No two messages of the same content will be propagated.
+                .build()
+                .map_err(|msg| io::Error::new(io::ErrorKind::Other, msg))?; // Temporary hack because `build` does not return a proper `std::error::Error`.
+
+            // build a gossipsub network behaviour
+            let gossipsub = gossipsub::Behaviour::new(
+                gossipsub::MessageAuthenticity::Signed(key.clone()),
+                gossipsub_config,
+            )?;
+            Ok(MyBehaviour { gossipsub })
+        })?
+        .with_swarm_config(|c| c.with_idle_connection_timeout(Duration::from_secs(120)))
+        .build();
+
+    // Create a Gossipsub topic
+    let topic = gossipsub::IdentTopic::new("monolith");
+    // subscribes to our topic
+    swarm.behaviour_mut().gossipsub.subscribe(&topic)?;
 
     // Reach out to another node if specified
     match clap_args.dial {
@@ -232,67 +222,35 @@ async fn main() -> Result<(), Box<dyn Error>> {
         (terminal_output)(format!("{:?}\r", ma));
     }
 
-    // Kick it off
+    // handle network and UI events in the same loop
     loop {
         tokio::select! {
             Some(box_message) = input_receiver.recv() => {
-                let message = *box_message;
-                swarm.behaviour_mut().floodsub.publish_any(
-                    floodsub_topic.clone(), message);
-            }
+                if let Err(e) = swarm
+                    .behaviour_mut().gossipsub
+                    .publish(topic.clone(), *box_message.as_bytes()) {
+                    (terminal_output)(format!("Publish error: {e:?}"));
+                }}
             //Todo:handle other messages, terminate message, topics, layout changes,
             //  event list, menubar, text commands.
-            event = swarm.select_next_some() => {
-                match event {
+            event = swarm.select_next_some() => match event {
                     SwarmEvent::NewListenAddr { address, .. } => {
                         (terminal_output)(format!("Listening on {address:?}"));
                     }
-                    SwarmEvent::Behaviour(AppBehaviourEvent::Floodsub(
-                        FloodsubEvent::Message(message))) => {
-                        let message_string = String::from_utf8(message.data).unwrap();
-                        // let t =message.topics;
-                        // ToDo: learn about the Vec<Topics> part of the Floodsub message. convert.
-                        (send_ui_update)(
+                    SwarmEvent::Behaviour(MyBehaviourEvent::Gossipsub(gossipsub::Event::Message {
+                    propagation_source: peer_id,
+                    message_id: id,
+                    message,
+                })) =>(send_ui_update)(
                             UiUpdate::TextMessage( String::from("monolith"),
                                 message.source,
-                                message_string)
+                                String::from_utf8(&message.data))
                         );
-                    }
-                    SwarmEvent::Behaviour(AppBehaviourEvent::Mdns(event)) => {
-                        match event {
-                            mdns::Event::Discovered(list) => {
-                                for (peer, _) in list {
-                                    swarm.behaviour_mut().floodsub.add_node_to_partial_view(peer);
-                                }
-                            }
-                            mdns::Event::Expired(list) => {
-                                for (peer, _) in list {
-                                    if !swarm.behaviour().mdns.has_node(&peer) {
-                                        swarm.behaviour_mut()
-                                        .floodsub.remove_node_from_partial_view(&peer);
-                                    }
-                                }
-                            }
-                        }
-                    }
                     SwarmEvent::ConnectionEstablished{peer_id,..} => {
                         (terminal_output)(format!("Connected!: '{:?}'",event));
-                        swarm.behaviour_mut().floodsub.add_node_to_partial_view(peer_id);
+                        swarm.behaviour_mut().gossipsub.add_explicit_peer(&peer_id);
                     }
-                    SwarmEvent::ConnectionClosed {
-                        peer_id,
-                        endpoint: ConnectedPoint::Dialer { address,.. },
-                        cause: Some(KeepAliveTimeout),..} => {
-                        swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
-                        // Hanging up so rude! Redial !
-                        // maybe a goodbye message. I believe this will only retry once.
-                        (terminal_output)(format!("KeepAliveTimeout, Redialing {:?}",address));
-                        swarm.dial(address)?;
-                    }
-                    SwarmEvent::ConnectionClosed {peer_id,..} =>{
-                        swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
-                        (terminal_output)(format!("CLOSED:{:?}", event));
-                    }
+
                     other_swarm_event => {
                         (terminal_output)(format!("EVENT: {:?}",other_swarm_event));
                     }
@@ -300,7 +258,23 @@ async fn main() -> Result<(), Box<dyn Error>> {
             }
         }
     }
-}
+
+//old keep-alive code
+
+//                    SwarmEvent::ConnectionClosed {
+//                        peer_id,
+//                        endpoint: ConnectedPoint::Dialer { address,.. },
+//                        cause: Some(KeepAliveTimeout),..} => {
+//                        swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
+//                        // Hanging up so rude! Redial !
+//                        // maybe a goodbye message. I believe this will only retry once.
+//                       (terminal_output)(format!("KeepAliveTimeout, Redialing {:?}",address));
+//                        swarm.dial(address)?;
+//                    }
+//                   SwarmEvent::ConnectionClosed {peer_id,..} =>{
+//                       swarm.behaviour_mut().floodsub.remove_node_from_partial_view(&peer_id);
+//                      (terminal_output)(format!("CLOSED:{:?}", event));
+//                    }
 
 // Argument parsing initialization
 #[derive(Parser, Default, Debug, Clone)]
@@ -312,7 +286,7 @@ pub struct CliArguments {
     listen_mode: Option<ListenMode>,
     /// Light ar dark theme can be picked. Default is light.
     theme: Option<Theme>,
-    #[arg(long)]
+    #[arg(long, value_parser = parse_and_transform_multiaddr)]
     /// Multiaddr to dial. --dial may be given multiple times.
     dial: Option<Vec<Multiaddr>>,
     /// Specify host network and port to listen on. May be given multiple times but is ignored
@@ -334,4 +308,14 @@ pub(crate) enum ListenMode {
     //Lan,
 }
 
+fn parse_and_transform_multiaddr(s: &str) -> Result<Multiaddr, String> {
+    // Transform the address string here
+    let transformed_addr = if s.starts_with('\\') {
+        &s[1..]
+    } else {
+        s
+    };
 
+    // Now parse the transformed string as a Multiaddr
+    Multiaddr::from_str(transformed_addr).map_err(|e| e.to_string())
+}
