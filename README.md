@@ -1,10 +1,9 @@
 # p2p-scope-rust #
 
 ## Overview ##
-This is a starter project for getting started builiding an application using libp2p in rust.
-Currently this project basically extends the chat example from rust-libp2p with a terminal user interface. 
+This is a starter project for builiding an application using libp2p in Rust.
+Currently this project extends the chat example from rust-libp2p with a terminal user interface. 
 See https://github.com/libp2p/rust-libp2p/tree/master/examples/chat for further information about the chat example.
-It's a good start.
 
 ## Help rename project and/or exeutable ##
 Something shorter would be better. 
