@@ -20,10 +20,12 @@ Instaed of mdns this version uses command line options to explicitly connect pee
 This section covers the basics. See the code for a complete list of options and thier current status.
 Use cargo to build the executable file.
 ```cargo build``` 
+
 ```<path-to-exe> --help ```
 Should be useful! 
 
-To start the swarm you can run the executable and note it's listening address Multiaddr. Lanuch a second terminal or on another pc and use the --dial option with the listening multiaddr from the first or subsequent peer.
+To start the swarm run the executable and note it's listening address Multiaddr. To add a node to the swarm lanuch a second terminal and use the --dial option with the listening multiaddr from the first or subsequent peer.  For now it should work on the same lan and open internet addresses. 
+
 
 ### Solving Known Issues ###
 If you don't see information you are looking for, like listening addresses, resize the terminal window.
