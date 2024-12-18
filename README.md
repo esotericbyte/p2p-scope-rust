@@ -47,48 +47,48 @@ https://github.com/esotericbyte/p2p-scope-rust
 
 
 #### Smaller Planned Changes ####
-
-Add runtime and settings files for the application.
-
-Add copy and paste.
-
 The current version uses floodsub but I'm upgrading it to use gossipsub by default like the current version of the chat example.
-
-Add a KAD-DHT.
-
-Add hole punching.
 
 Add a parser for scope commmands during runtime. These commands should introspect into a running node, and dataflows between nodes, and properties from a systems perspective. This feature is intended to be diagonostic. Make runtime command system cloneable for release application buids. 
 
-Add ipfs pinning, and exchange of hashes between nodes to demonstrate how to use lib2p2 with ipfs. Maybe not so small but I think so. 
+Runtime and settings files for the application.
+
+Implimentation of mdns as an option that advertizes listening ports, and allows them to be collected and dialed. 
+I'm not convinced that mdns should be a swarm beahaivor. 
+
+Copy and paste from the terminal interface in general or for specific data like listening addresses.
+
+Develop the swarm behavivors: KAD-DHT, hole punching.
+
+IPFS pinning, and exchange of hashes between nodes to demonstrate how to use lib2p2 with ipfs. 
 
 ####  Swarm Config ####
-Think about options and commands to configure and test libp2p swarms. By default the idea is to just change the code for the swarm or swarms the application uses.
-Scope aims to co-exist with applicaiton UI and architecture.
+Think about options and commands to configure and test libp2p swarms. The tooling needs to match the network configuration in the swarm. 
+How can the primary swarm and a scope be developed together and kept in sync? 
+Are there projects that use multiple swarms?
+Modularity could be served to use multiple processes and bridge them together through networking, message channels. 
 
 #### Scope build target ####
-Add a Scope build target that includes the scope UI, scope sub comand with options and rundtime commands. 
-Libp2p networking configuration, event loop, an other parts of an application can be built separately in a release build target without the scope elements.
+Build targets with and without scope tooling. 
+"Scope" that includes the scope UI, scope sub comand with options and runtime commands. 
+"Release" build without the scope elements.
 
 #### Tauri Interface ####
-Develop a Tauri interface as an option and integrate it. This should be useable as a replacement or in paralel to the terminal interface. 
-
-#### Lanuch Larger Derived project. ####
-Fork the project with Tauri or similar rich interface and swarm configuation. Planing and community development needs to be done before this phase. 
-Develop a modular framework for building services for local first and distributed resources.  
-Disbribute html5 based documents and reference data.
-Dataflows into the system and delevery from the system to cloud based applications using a Kafka style data model.
-Contribute services such as identity, ui context, consensus for shared data. 
-Model to Integrate other languages. 
+Develop a Tauri interface and integrate it.  
+Having two interfaces active will require further development of the facade layer of fuctions so both working together might be another project.
 
 ## Primer Ideas for further development and forks. ##
 **More ideas beyond current plans.**
 
-Pick another UI lib or frameworka and build out an interface using it. 
+Pick another UI lib or framework and build out an interface using it. 
+Add p2p-scope-rust to an existing project to gain some insight into internals. 
 
 ### Chat App ###
-Develop a richer libp2p chat app with a terminal interface such as markdown message support, account registartion or federation.  
+Develop a richer libp2p chat app with a terminal interface such as markdown message support,images, emoji, account registartion, federation, web of trust.
+Creating a similar project using the libp2p daemon go project together with python or Go for example could be interesting. 
+
 
 ### Networking and Consensus Models ###
 Create a model of a libp2p swarm. Some nodes might take a "swarm_observer" role and listen on the network can maintain for informational messages collected from all nodes to update the model and enable key states, data flows, and networking operations of test or demonstrations to be collected and published as a dynamic document.
+
 
